@@ -1,0 +1,619 @@
+```{r, message=FALSE, warning=FALSE}
+# analises de diversidades
+library(phyloseq)
+library(picante)
+library(phyloseq)
+library(dplyr)
+library(effsize)
+library(grid)
+library(rstatix)
+library(ggnewscale)
+library(vegan)
+library(tidyr)
+library(tidyverse)
+library(ggpubr)
+library(reshape2)
+library(scales)
+library(ape)
+my_comparisons <- list(   c("Wet", "Dry"))
+```
+
+```{r}
+phy_tree_16s <- phy_tree(ps_16s)
+phy_tree_18s <- phy_tree(ps_18s)
+phy_tree_ITS <- phy_tree(ps_its)
+
+```
+
+```{r}
+# Step 2: Function to prune the phylogenetic tree to match the OTUs in the modified data
+prune_phy_tree_to_marker_v2 <- function(phy_tree, df_marker) {
+  otus_in_data <- unique(df_marker$OTU)
+  
+  print(paste("Number of unique OTUs in data:", length(otus_in_data)))
+  print(paste("Number of tips in tree:", length(phy_tree$tip.label)))
+  
+  otus_in_tree <- intersect(otus_in_data, phy_tree$tip.label)
+  print(paste("Number of OTUs from data present in tree:", length(otus_in_tree)))
+  
+  phy_tree_pruned <- keep.tip(phy_tree, otus_in_tree)
+  
+  if (is.null(phy_tree_pruned)) {
+    print("Pruning resulted in a NULL tree")
+  } else {
+    print(paste("Number of tips in pruned tree:", length(phy_tree_pruned$tip.label)))
+  }
+  
+  return(phy_tree_pruned)
+}
+```
+
+```{r}
+# Step 3: Apply pruning for each phylogenetic tree based on the corresponding filtered table
+phy_tree_16s_pruned_v2 <- prune_phy_tree_to_marker_v2(phy_tree_16s, normal_16S)
+
+phy_tree_18s_pruned_v2 <- prune_phy_tree_to_marker_v2(phy_tree_18s, normal_18S)
+
+phy_tree_ITS_pruned_v2 <- prune_phy_tree_to_marker_v2(phy_tree_ITS, normal_ITS)
+```
+
+```{r}
+calculate_faith_pd <- function(df, phy_tree, marker) {
+  df_marker <- df %>% filter(Marker == marker)
+
+  otu_matrix <- df_marker %>%
+    select(Sample, OTU, RarefiedAbundance) %>%
+    pivot_wider(names_from = OTU, values_from = RarefiedAbundance, values_fill = 0) %>%
+    column_to_rownames("Sample")
+
+  common_otus <- intersect(phy_tree$tip.label, colnames(otu_matrix))
+  phy_tree <- keep.tip(phy_tree, common_otus)
+  otu_matrix <- otu_matrix[, common_otus]
+
+  pd_values <- pd(otu_matrix > 0, phy_tree, include.root = TRUE)
+
+  seasons <- df_marker %>%
+    select(Sample, Season) %>%
+    distinct()
+
+  result_df <- pd_values %>%
+    as.data.frame() %>%
+    rownames_to_column("Sample") %>%
+    rename(PD = PD) %>%
+    left_join(seasons, by = "Sample")
+
+  return(result_df)
+}
+```
+
+
+```{r}
+faith_pd_16s <- calculate_faith_pd(filtered_combined_data, phy_tree_16s_pruned_v2, "16S")
+
+faith_pd_18s <- calculate_faith_pd(filtered_combined_data, phy_tree_18s_pruned_v2, "18S")
+
+faith_pd_its <- calculate_faith_pd(filtered_combined_data, phy_tree_ITS_pruned_v2, "ITS")
+```
+
+```{r}
+# Combine the data frames into a single data frame
+combined_faiths_pd <- bind_rows(
+  faith_pd_16s %>% mutate(Marker = "16S"),
+  faith_pd_18s %>% mutate(Marker = "18S"),
+  faith_pd_its %>% mutate(Marker = "ITS")
+)
+
+combined_faiths_pd$Marker <- gsub("ITS", " ITS", combined_faiths_pd$Marker)
+```
+
+
+```{r}
+# Plot joint PD's
+pdf("faithspd.pdf", width=3.5, height=4)
+par(family = "arial")
+ggplot(combined_faiths_pd, aes(x = Season, y = PD)) + 
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 150),
+                     breaks = seq(0, 150, by = 50)) + 
+  theme_pubr() +
+  theme(
+    legend.position = c(0.1, 0.9),
+    legend.title = element_text(size = 11, face = "bold", hjust = 0.5, vjust = -0.5),
+    legend.text = element_text(size = 9),
+    legend.key.size = unit(0.8, "lines"),
+    legend.spacing.x = unit(0, 'cm'),
+    legend.key.width = unit(0, "cm"),
+    legend.box.spacing = unit(-0.5, "cm"),  # Spacing between the legend box and the plot
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0)
+  ) +
+  ylab("Faith's Phylogenetic Diversity") +
+  geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+  scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +  # Season colors for boxplots
+  new_scale_fill() +
+  geom_point(aes(shape = Marker, fill = Marker),
+             position = position_jitter(0.057),
+             size = 2,
+             stroke = 0.5,
+             color = "black") +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  # Start a new fill scale
+  scale_fill_manual(values = c("#CC3333", "#66FF00", "#000066")) +  # Marker colors for points
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+dev.off()
+
+```
+
+```{r}
+# Individual Faith's PD
+# Common theme and settings
+common_theme <- theme_pubr() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(face = "bold")
+  )
+
+# Function to create plot for each marker
+create_marker_plot <- function(data, marker, ylab, point_shape, point_fill) {
+  ggplot(data, aes(x = Season, y = PD)) + 
+    scale_y_continuous(expand = c(0, 0), 
+                       limits = c(0, 150),
+                       breaks = seq(0, 150, by = 50)) + 
+    common_theme +
+    ylab(ylab) +
+    geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+    scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +
+    new_scale_fill() +
+    geom_point(aes(fill = Season),
+               shape = point_shape,
+               position = position_jitter(0.057),
+               size = 2,
+               stroke = 0.5,
+               color = "black") +
+    scale_fill_manual(values = c(point_fill, point_fill)) +
+    coord_cartesian(clip = "off") +
+    stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+}
+
+# Create plots for each marker
+pdf("faithspd_16S.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_marker_plot(combined_faiths_pd %>% filter(Marker == "16S"), "16S", "Faith's Phylogenetic Diversity (16S)", 22, "#66FF00"))
+dev.off()
+
+pdf("faithspd_18S.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_marker_plot(combined_faiths_pd %>% filter(Marker == "18S"), "18S", "Faith's Phylogenetic Diversity (18S)", 23, "#000066"))
+dev.off()
+
+pdf("faithspd_ITS.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_marker_plot(combined_faiths_pd %>% filter(Marker == " ITS"), "ITS", "Faith's Phylogenetic Diversity (ITS)", 21, "#CC3333"))
+dev.off()
+```
+
+```{r}
+# Pool metrics function on rarefied data
+pool_metrics <- function(normal) {
+  require(tidyverse)
+  require(vegan)
+# Convert Abundance to presence/absence
+normal_pa <- normal %>%
+  mutate(Presence = ifelse(RarefiedAbundance > 0, 1, 0))
+
+# Pivot to create an incidence matrix
+incidence_matrix <- normal_pa %>%
+  select(Sample, OTU, Presence) %>%
+  pivot_wider(names_from = OTU, values_from = Presence, values_fill = list(Presence = 0))
+
+# Convert to data frame and set row names
+incidence_matrix_df <- as.data.frame(incidence_matrix)
+row.names(incidence_matrix_df) <- incidence_matrix_df$Sample
+incidence_matrix_df <- incidence_matrix_df %>% select(-Sample)
+
+# Calculate richness estimators
+pool_metrics_df <- specpool(incidence_matrix_df) %>%
+  rename(
+    Observed_OTU = Species,
+    Chao2 = chao,
+    Chao2_SE = chao.se,
+    Jackknife1 = jack1,
+    Jackknife1_SE = jack1.se,
+    Jackknife2 = jack2,
+    Bootstrap = boot,
+    Bootstrap_SE = boot.se,
+    Number_of_Samples = n
+  )
+return(pool_metrics_df)
+}
+
+# Calculate pool metrics on rarefied data
+pool_metrics_rarefied <- pool_metrics(filtered_combined_data)
+
+# Filter data for each marker before calculating pool metrics
+rarefied_16s <- filtered_combined_data %>% filter(Marker == "16S")
+rarefied_18s <- filtered_combined_data %>% filter(Marker == "18S")
+rarefied_its <- filtered_combined_data %>% filter(Marker == "ITS")
+
+# Calculate pool metrics for each marker separately
+pool_metrics_16s <- pool_metrics(rarefied_16s)
+pool_metrics_18s <- pool_metrics(rarefied_18s)
+pool_metrics_its <- pool_metrics(rarefied_its)
+
+combined_pool_metrics <- bind_rows(
+ pool_metrics_16s %>% mutate(Marker = "16S"),
+ pool_metrics_18s %>% mutate(Marker = "18S"),
+ pool_metrics_its %>% mutate(Marker = "ITS")
+)
+```
+
+
+```{r}
+# Function to calculate geometric mean
+geom_mean <- function(x) {
+  exp(mean(log(x[x > 0]))) # Exclude zeroes for geometric mean calculation
+}
+
+# Calculate geometric means on raw data
+geom_means_obs <- combined_faiths_pd %>%
+  group_by(Season) %>%
+  summarise(Observed = geom_mean(SR)) 
+
+# Create a custom grob for the GM legend box
+gm_legend_obs <- grobTree(
+  rectGrob(gp = gpar(fill = NA, col = NA)),  # Add a rectangle for the background
+  textGrob(
+    label = "GeoMean",
+    x = 3.1,
+    y = 3,  # Adjust y position for the GM text
+    hjust = 0.5,
+    gp = gpar(col = "black", fontsize = 10, fontface = "bold")
+  ),
+  textGrob(
+    label = paste0("Dry: ", round(geom_means_obs$Observed[geom_means_obs$Season == "Dry"], 2), "\n",
+                   "Wet: ", round(geom_means_obs$Observed[geom_means_obs$Season == "Wet"], 2)),
+    x = 3.1,
+    y = 2.325,  # Adjust y position for the values
+    hjust = 0.5,
+    gp = gpar(col = "black", fontsize = 8)
+  )
+)
+
+pdf("obsotus_rarefied.pdf", width=3.5, height=4)
+par(family = "arial")
+ggplot(combined_faiths_pd, aes(x = Season, y = SR)) + 
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 2000),
+                     breaks = seq(0, 2000, by = 500)) + 
+  theme_pubr() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 11, face = "bold", hjust = 0.5, vjust = -0.5),
+    legend.text = element_text(size = 9),
+    legend.key.size = unit(0.8, "lines"),
+    legend.spacing.x = unit(0, 'cm'),
+    legend.key.width = unit(0, "cm"),
+    legend.box.spacing = unit(-0.5, "cm"),  # Spacing between the legend box and the plot
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0)
+  ) +
+  ylab("Observed Features") +
+  geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+  scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +  # Season colors for boxplots
+  new_scale_fill() +
+  geom_point(aes(shape = Marker, fill = Marker),
+             position = position_jitter(0.057),
+             size = 2,
+             stroke = 0.5,
+             color = "black") +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  # Start a new fill scale
+  scale_fill_manual(values = c("#CC3333", "#66FF00", "#000066")) +  # Marker colors for points
+  annotation_custom(gm_legend_obs, xmin = 0.95, xmax = 1.5, ymin = 1400, ymax = 1600) +
+  annotate("text", x = -Inf, y = Inf, hjust = -0.01, vjust = 1,
+         label = paste(" Total: 6.264\n",
+                        "Estimation*: 6.303 ~ 7.327"),
+          size = 3, fontface = "bold", color = "black") +
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+dev.off()
+
+```
+
+```{r}
+get_alpha_div_melted_optimized <- function(melted_table) {
+
+  # Group by Sample and summarize
+  alpha_div <- melted_table %>%
+    group_by(Sample, Marker, Season) %>%
+    summarise(
+      Shannon = diversity(CSSAbundance, index = "shannon"),
+      Simpson = diversity(CSSAbundance, index = "simpson"),
+      .groups = "drop"
+    )
+  
+  # Clean sample names
+  alpha_div$Sample <- sapply(alpha_div$Sample, function(x) {
+    x <- gsub("^X", "", x)
+    x <- gsub("\\.\\.", "*.", x)
+    return(x)
+  })
+  
+  return(alpha_div)
+}
+
+# 
+alpha_div_rarefied <- get_alpha_div_melted_optimized(filtered_combined_data)
+
+alpha_div_rarefied$Marker <- gsub("ITS", " ITS", alpha_div_rarefied$Marker)
+```
+
+```{r}
+# Joint shannon_plot
+pdf("shannon_rarefied.pdf", width=3.5, height=4)
+par(family = "arial")
+ggplot(alpha_div_rarefied, aes(x = Season, y = Shannon)) + 
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 10),
+                     breaks = seq(0, 10, by = 2)) + 
+  theme_pubr() +
+  theme(
+    legend.position = c(0.1, 0.9),
+    legend.title = element_text(size = 11, face = "bold", hjust = 0.5, vjust = -0.5),
+    legend.text = element_text(size = 9),
+    legend.key.size = unit(0.8, "lines"),
+    legend.spacing.x = unit(0, 'cm'),
+    legend.key.width = unit(0, "cm"),
+    legend.box.spacing = unit(-0.5, "cm"),  # Spacing between the legend box and the plot
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0)
+  ) +
+  ylab("Shannon's Diversity Index") +
+  geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+  scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +  # Season colors for boxplots
+  new_scale_fill() +
+  geom_point(aes(shape = Marker, fill = Marker),
+             position = position_jitter(0.057),
+             size = 2,
+             stroke = 0.5,
+             color = "black") +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  #Start a new fill scale
+ scale_fill_manual(values = c("#CC3333", "#66FF00", "#000066")) +  # Marker colors for points
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+dev.off()
+```
+
+```{r}
+# Joint Simpson plot
+pdf("simpson_rarefied.pdf", width=3.5, height=4)
+par(family = "arial")
+ggplot(alpha_div_rarefied, aes(x = Season, y = Simpson)) + 
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 1.1),
+                     breaks = seq(0, 1, by = 0.2)) + 
+  theme_pubr() +
+  theme(
+    legend.position = c(0.1, 0.9),
+    legend.title = element_text(size = 11, face = "bold", hjust = 0.5, vjust = -0.5),
+    legend.text = element_text(size = 9),
+    legend.key.size = unit(0.8, "lines"),
+    legend.spacing.x = unit(0, 'cm'),
+    legend.key.width = unit(0, "cm"),
+    legend.box.spacing = unit(-0.5, "cm"),  # Spacing between the legend box and the plot
+    legend.margin = margin(t = 0, r = 0, b = 0, l = 0)
+  ) +
+  ylab("Simpson's Diversity Index") +
+  geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+  scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +  # Season colors for boxplots
+  new_scale_fill() +
+  geom_point(aes(shape = Marker, fill = Marker),
+             position = position_jitter(0.057),
+             size = 2,
+             stroke = 0.5,
+             color = "black") +
+  scale_shape_manual(values = c(21, 22, 23)) +
+  # Start a new fill scale
+  scale_fill_manual(values = c("#CC3333", "#66FF00", "#000066")) +  # Marker colors for points
+  coord_cartesian(clip = "off") +
+  stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+dev.off()
+```
+
+```{r}
+# Individual Simpson
+# Common theme and settings
+common_simpson_theme <- theme_pubr() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(face = "bold")
+  )
+
+# Function to create plot for each marker's Simpson index
+create_simpson_marker_plot <- function(data, marker, ylab, point_shape, point_fill) {
+  ggplot(data, aes(x = Season, y = Simpson)) + 
+    scale_y_continuous(expand = c(0, 0), 
+                       limits = c(0, 1.1),
+                       breaks = seq(0, 1, by = 0.2)) + 
+    common_simpson_theme +
+    ylab(ylab) +
+    geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+    scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +
+    new_scale_fill() +
+    geom_point(aes(fill = Season),
+               shape = point_shape,
+               position = position_jitter(0.057),
+               size = 2,
+               stroke = 0.5,
+               color = "black") +
+    scale_fill_manual(values = c(point_fill, point_fill)) +
+    coord_cartesian(clip = "off") +
+    stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+}
+
+# Create separate plots for each marker and save them
+pdf("simpson_16S.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_simpson_marker_plot(alpha_div_rarefied %>% filter(Marker == "16S"), "16S", "Simpson's Diversity Index (16S)", 22, "#66FF00"))
+dev.off()
+
+pdf("simpson_18S.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_simpson_marker_plot(alpha_div_rarefied %>% filter(Marker == "18S"), "18S", "Simpson's Diversity Index (18S)", 23, "#000066"))
+dev.off()
+
+pdf("simpson_ITS.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_simpson_marker_plot(alpha_div_rarefied %>% filter(Marker == " ITS"), "ITS", "Simpson's Diversity Index (ITS)", 21, "#CC3333"))
+dev.off()
+
+```
+
+
+```{r}
+# Individual Shannon
+# Common theme and settings
+common_shannon_theme <- theme_pubr() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(face = "bold")
+  )
+
+# Function to create plot for each marker's Simpson index
+create_shannon_marker_plot <- function(data, marker, ylab, point_shape, point_fill) {
+  ggplot(data, aes(x = Season, y = Shannon)) + 
+    scale_y_continuous(expand = c(0, 0), 
+                       limits = c(0, 10),
+                       breaks = seq(0, 10, by = 2)) + 
+    common_shannon_theme +
+    ylab(ylab) +
+    geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+    scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +
+    new_scale_fill() +
+    geom_point(aes(fill = Season),
+               shape = point_shape,
+               position = position_jitter(0.057),
+               size = 2,
+               stroke = 0.5,
+               color = "black") +
+    scale_fill_manual(values = c(point_fill, point_fill)) +
+    coord_cartesian(clip = "off") +
+    stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+}
+
+# Create separate plots for each marker and save them
+pdf("shannon_16S.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_shannon_marker_plot(alpha_div_rarefied %>% filter(Marker == "16S"), "16S", "Shannon's Diversity Index (16S)", 22, "#66FF00"))
+dev.off()
+
+pdf("shannon_18S.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_shannon_marker_plot(alpha_div_rarefied %>% filter(Marker == "18S"), "18S", "Shannon's Diversity Index (18S)", 23, "#000066"))
+dev.off()
+
+pdf("shannon_ITS.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_shannon_marker_plot(alpha_div_rarefied %>% filter(Marker == " ITS"), "ITS", "Shannon's Diversity Index (ITS)", 21, "#CC3333"))
+dev.off()
+
+```
+
+```{r}
+geom_mean <- function(x) {
+  exp(mean(log(x[x > 0])))  
+}
+
+create_gm_legend <- function(geom_means_obs, label_position) {
+  grobTree(
+    rectGrob(gp = gpar(fill = NA, col = NA)),  
+    textGrob(
+      label = "GeoMean",
+        x = 3.1,
+        y = 3, ,  
+      hjust = 0.5,
+      gp = gpar(col = "black", fontsize = 10, fontface = "bold")
+    ),
+    textGrob(
+      label = paste0("Dry: ", round(geom_means_obs$Observed[geom_means_obs$Season == "Dry"], 2), "\n",
+                     "Wet: ", round(geom_means_obs$Observed[geom_means_obs$Season == "Wet"], 2)),
+      x = 3.1,
+      y = 2.325,   
+      hjust = 0.5,
+      gp = gpar(col = "black", fontsize = 8)
+    )
+  )
+}
+
+create_obs_marker_plot <- function(data, marker, ylab, point_shape, point_fill, gm_legend, total_label) {
+  ggplot(data, aes(x = Season, y = SR)) + 
+    scale_y_continuous(expand = c(0, 0), 
+                       limits = c(0, 2000),
+                       breaks = seq(0, 2000, by = 500)) + 
+    theme_pubr() +
+    theme(
+      legend.position = "none",  
+      legend.title = element_blank(),  
+      legend.text = element_blank()    
+    ) +
+    ylab(ylab) +
+    geom_boxplot(aes(fill = Season), width = 0.1, outlier.shape = NA, alpha = 0.4) +
+    scale_fill_manual(values = c("#FF0000", "#0000FF"), guide = "none") +
+    new_scale_fill() +
+    geom_point(aes(fill = Season),
+               shape = point_shape,
+               position = position_jitter(0.057),
+               size = 2,
+               stroke = 0.5,
+               color = "black") +
+    scale_fill_manual(values = c(point_fill, point_fill)) +
+    annotation_custom(gm_legend, xmin = 0.95, xmax = 1.41, ymin = 1400, ymax = 1600) +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.01, vjust = 1,
+             label = total_label,
+             size = 3, fontface = "bold", color = "black") +
+    coord_cartesian(clip = "off") +
+    stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+}
+
+geom_means_obs <- combined_faiths_pd %>%
+  group_by(Season, Marker) %>%
+  summarise(Observed = geom_mean(SR)) 
+geom_means_obs_16S <- geom_means_obs %>% filter(Marker == "16S")
+geom_means_obs_18S <- geom_means_obs %>% filter(Marker == "18S")
+geom_means_obs_ITS <- geom_means_obs %>% filter(Marker == " ITS")
+
+
+total_label_16S <- paste(" Total: 3.928\n", "Estimation*: 3.732 ~ 4.505")  
+total_label_18S <- paste(" Total: 473\n", "Estimation*: 701 ~ 832")  
+total_label_ITS <- paste(" Total: 1.863\n", "Estimation*: 1.737 ~ 2.119")   
+
+pdf("obsotus_16S_rarefied.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_obs_marker_plot(combined_faiths_pd %>% filter(Marker == "16S"), 
+                             "16S", "Observed Features (16S)", 
+                             22, "#66FF00", 
+                             create_gm_legend(geom_means_obs_16S, c(3.1, 3)), 
+                             total_label_16S))
+dev.off()
+
+pdf("obsotus_18S_rarefied.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_obs_marker_plot(combined_faiths_pd %>% filter(Marker == "18S"), 
+                             "18S", "Observed Features (18S)", 
+                             23, "#000066", 
+                             create_gm_legend(geom_means_obs_18S, c(3.1, 3)), 
+                             total_label_18S))
+dev.off()
+
+pdf("obsotus_ITS_rarefied.pdf", width=3.5, height=4)
+par(family = "arial")
+print(create_obs_marker_plot(combined_faiths_pd %>% filter(Marker == " ITS"), 
+                             "ITS", "Observed Features (ITS)", 
+                             21, "#CC3333", 
+                             create_gm_legend(geom_means_obs_ITS, c(3.1, 3)), 
+                             total_label_ITS))
+dev.off()
+```
+
