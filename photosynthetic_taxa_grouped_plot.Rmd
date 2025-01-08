@@ -1,0 +1,235 @@
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(scales)
+library(paletteer)
+library(ggh4x)
+library(tidyr)
+library(gridExtra)
+library(viridis)
+```
+
+
+```{r}
+selected_photosynthesizers <- c(
+  "Bacillariales", "Chaetopeltidales", "Chaetophorales", "Charophyta*",
+  "Chlamydomonadales", "Chlorellales", "Chlorocystidales", "Chlorosarcinales",
+  "Cladophorales", "Eunotiales", "Eustigmatales", "Leptolyngbyales",
+  "Mastogloiales", "Naviculales", "Nostocales",  "Prasiolales", "Sphaeropleales", "TIS Fam. Coccomyxaceae", "TIS Fam. Leptosiraceae", "Trebouxiales", "Trentepohliales",
+  "Ulotrichales",  "Watanabeales"
+)
+
+```
+
+
+
+```{r}
+photosynthesizing_data <- filtered_combined_data %>%
+  filter(Order %in% selected_photosynthesizers)
+
+photosynthesizing_data <- photosynthesizing_data %>%
+  group_by(Marker) %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  ungroup()
+```
+
+
+```{r}
+raw_data <- photosynthesizing_data %>%
+  group_by(Marker, Order, Season, Sample) %>%
+  summarise(
+    SampleSum = sum(CLR_CZM, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Marker, Order) %>%
+  mutate(
+    SampleSum = log(SampleSum + 1)  # Apply log transformation without max scaling
+  ) %>%
+  ungroup()
+
+
+
+
+effect_sizes <- raw_data %>%
+  group_by(Marker, Order) %>%
+  summarise(
+    test = list(wilcox.test(SampleSum ~ Season, exact = FALSE)),
+    effect_size = abs(qnorm(test[[1]]$p.value/2)) / sqrt(sum(!is.na(SampleSum))),
+    p_value = test[[1]]$p.value,
+    .groups = "drop"
+  ) 
+
+difference_data <- raw_data %>%
+  group_by(Marker, Order) %>%
+  summarise(
+    p_value = wilcox.test(SampleSum ~ Season, exact = FALSE)$p.value,
+    .groups = "drop")
+
+order_by_abundance <- raw_data %>%
+  group_by(Marker, Order) %>%
+  summarise(
+    MeanAbundance = mean(SampleSum),
+    .groups = "drop"
+  ) %>%
+  arrange(Marker, desc(MeanAbundance)) %>%
+  group_by(Marker) %>%
+  mutate(order = row_number())
+
+plot_data <- raw_data %>%
+  left_join(difference_data, by = c("Marker", "Order")) %>%
+  group_by(Marker) %>%
+  mutate(
+    Order = factor(Order, 
+                  levels = order_by_abundance$Order[order_by_abundance$Marker == first(Marker)])
+  )
+
+median_data <- plot_data %>%
+  group_by(Marker, Order, Season) %>%
+  summarise(
+    MedianVal = median(SampleSum),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = Season,
+    values_from = MedianVal
+  )
+```
+
+
+```{r}
+ggplot(plot_data, aes(x = Order, y = SampleSum)) +
+  geom_vline(xintercept = 1:23, color = "grey90", linetype = "dotdash") +
+  geom_boxplot(
+    aes(fill = Season),
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    alpha = 0.7,
+    outlier.shape = NA
+  ) +
+  geom_point(
+    aes(color = Season),
+    position = position_jitterdodge(dodge.width = 0.8, jitter.width = 0.1),
+    size = 2,
+    alpha = 0.6
+  ) +
+  # Effect size bar
+  geom_segment(
+    data = effect_sizes,
+    aes(
+      x = as.numeric(Order) - 0.3,
+      xend = as.numeric(Order) + 0.3,
+      y = max(plot_data$SampleSum[plot_data$Marker == first(Marker)]) * 1.1,
+      yend = max(plot_data$SampleSum[plot_data$Marker == first(Marker)]) * 1.1
+    ),
+    size = 1,
+    color = "black"
+  ) +
+  scale_y_continuous(expand = c(0, 0), 
+                     limits = c(0, 7),
+                     breaks = seq(0, 6, by = 2)) +
+  # Stats display
+  geom_richtext(
+    data = effect_sizes,
+    aes(
+      x = Order,
+      y = max(plot_data$SampleSum[plot_data$Marker == first(Marker)]) * 1.15,
+      label = sprintf("<b>%.2f</b><br><i>%.3f</i>", effect_size, p_value)
+    ),
+    size = 5,
+    fill = NA,
+    label.color = NA
+  ) +
+  scale_fill_manual(values = c("Dry" = "red", "Wet" = "blue")) +
+  scale_color_manual(values = c("Dry" = "red", "Wet" = "blue")) +
+  facet_grid(. ~ Marker, 
+             scales = "free", 
+             space = "free_x",
+             labeller = labeller(Marker = c("16S" = "Prokaryotic", "18S" = "Eukaryotic"))) +
+  labs(
+    x = "Orders",
+    y = "Scaled CLR-CZM Abundance (Per Marker 16S/18S)",
+    title = "Seasonal Distribution of Photosynthetic Orders"
+  ) +
+  theme_pubr() + guides(
+    fill = guide_legend(override.aes = list(shape = 22,      # Square shape
+                                           size = 5,          # Size of square
+                                           alpha = 1)),       # Full opacity
+    color = "none"                                           # Remove point legend
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 15),
+    axis.title = element_text(size = 15),
+    strip.text = element_text(size = 15, face = "bold"),
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 15),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing = unit(2, "lines"),
+    legend.title = element_text(size = 14, hjust = 0.5),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("photosynthetic_orders_distribution.pdf", 
+       width = 18,
+       height = 8,
+       dpi = 300)
+
+
+```
+
+```{r}
+# Define the classes of interest
+classes_of_interest <- c("Cyanobacteria*", "Chlorophyceae", "Trebouxiophyceae", "Ulvophyceae",
+                         "Charophyta*", "Eustigmatophyceae", "Chrysophyceae", "Bacillariophyceae")
+
+# Filter the data to include only rows for the classes of interest
+filtered_data <- filtered_combined_data[filtered_combined_data$Class %in% classes_of_interest, ]
+
+# Calculate the total CSSAbundance for each Class and Marker in the classes of interest
+total_abundance <- aggregate(CSSAbundance ~ Class + Marker, data = filtered_data, sum, na.rm = TRUE)
+
+# Calculate the CSSAbundance where Order is NA for each Class and Marker in the classes of interest
+na_abundance <- aggregate(CSSAbundance ~ Class + Marker, data = filtered_data[is.na(filtered_data$Order), ], sum, na.rm = TRUE)
+
+# Merge the two datasets to calculate the percentage for each Class and Marker
+abundance_percentage <- merge(total_abundance, na_abundance, by = c("Class", "Marker"), all.x = TRUE, suffixes = c("_total", "_na"))
+abundance_percentage$CSSAbundance_na[is.na(abundance_percentage$CSSAbundance_na)] <- 0
+abundance_percentage$Percentage_NA <- (abundance_percentage$CSSAbundance_na / abundance_percentage$CSSAbundance_total) * 100
+
+# View the results for the specified classes per Marker
+abundance_percentage[c("Class", "Marker", "Percentage_NA")]
+
+
+```
+
+```{r}
+# Define the OTU of interest and the text to insert
+otu_of_interest <- "4af026f6a973a2f74fa26417bca62991"  # Replace with the OTU you want to select
+text_to_insert <- "Leptolyngbyales"  # Replace with the text you want to insert in the Order column
+# Update the Order column for the selected OTU
+filtered_combined_data$Order[filtered_combined_data$OTU == otu_of_interest] <- text_to_insert
+
+```
+
+```{r}
+# Update the Order column based on the specified conditions
+filtered_combined_data$Order <- ifelse(
+  filtered_combined_data$Order == "Trebouxiophyceae IS" & filtered_combined_data$Genus == "Coccomyxa", "TIS Fam. Coccomyxaceae",
+  ifelse(filtered_combined_data$Order == "Trebouxiophyceae IS" & filtered_combined_data$Genus == "Elliptochloris", "Prasiolales",
+  ifelse(filtered_combined_data$Order == "Trebouxiophyceae IS" & filtered_combined_data$Genus == "Leptosira", "TIS Fam. Leptosiraceae",
+  ifelse(filtered_combined_data$Order == "Trebouxiophyceae IS" & filtered_combined_data$Genus == "Xylochloris", "Trebouxiales",
+  ifelse(filtered_combined_data$Order == "Trebouxiophyceae IS" & filtered_combined_data$Genus == "Coenocystis", "Sphaeropleales",
+         filtered_combined_data$Order)))))
+
+```
+
+```{r}
+# Extract unique orders under the specified classes of interest
+unique_orders <- unique(filtered_combined_data$Order[filtered_combined_data$Class %in% classes_of_interest])
+
+# View the unique orders
+unique_orders
+
+```
+

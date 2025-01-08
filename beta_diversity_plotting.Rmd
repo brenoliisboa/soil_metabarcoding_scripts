@@ -1,0 +1,907 @@
+---
+title: "Untitled"
+author: "Breno"
+date: "2024-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(phyloseq)
+library(picante)
+library(phyloseq)
+library(dplyr)
+library(effsize)
+library(grid)
+library(rstatix)
+library(ggnewscale)
+library(vegan)
+library(tidyr)
+library(tidyverse)
+library(ggpubr)
+library(reshape2)
+library(scales)
+library(GUniFrac)
+library(gridExtra) 
+library(ggh4x)
+library(ggrepel)
+my_comparisons <- list(   c("Wet", "Dry"))
+```
+
+####### Bray Curtis
+
+```{r}
+# List of bray_curtis objects and their names
+bray_curtis_list <- list(
+  bray_curtis_16S = bray_curtis_16S,
+  bray_curtis_18S = bray_curtis_18S,
+  bray_curtis_ITS = bray_curtis_ITS
+)
+
+# Initialize a list to store the modified nmds_df data frames
+bray_curtis_nmds_list <- list()
+
+# Loop through each bray_curtis object
+for (bray_name in names(bray_curtis_list)) {
+  
+  # Extract the nmds_df and stress value
+  nmds_df <- bray_curtis_list[[bray_name]]$nmds_df
+  stress_value <- bray_curtis_list[[bray_name]]$stress  # Assuming stress is part of the NMDS result
+  marker <- gsub("bray_curtis_", "", bray_name)  # Extract marker name
+  
+  # Add stress value to nmds_df
+  nmds_df$stress <- stress_value
+  
+  # Add marker to nmds_df
+  nmds_df$Marker <- marker
+  
+  # Add custom axis labels (no eigenvalues, so no % variance explained)
+  nmds_df$xlab <- "NMDS1"
+  nmds_df$ylab <- "NMDS2"
+  
+  # Store in the list
+  bray_curtis_nmds_list[[marker]] <- nmds_df
+}
+
+# Combine all nmds_df data frames into one for Bray-Curtis
+combined_bray_curtis_nmds_df <- do.call(rbind, bray_curtis_nmds_list)
+
+# Get the unique markers from your data
+markers <- unique(combined_bray_curtis_nmds_df$Marker)
+
+# Define a vector of markers of interest for PERMANOVA results
+markers_of_interest <- c("bray_curtis_16S", "bray_curtis_18S", "bray_curtis_ITS")
+
+# Initialize a list to store individual plots
+plot_list <- list()
+
+# Loop over each marker to create individual plots
+for (i in seq_along(markers)) {
+  marker_i <- markers[i]
+  
+  # Subset the data for the current marker
+  data_i <- subset(combined_bray_curtis_nmds_df, Marker == marker_i)
+  
+  # Find the matching marker in the markers_of_interest vector
+  marker_of_interest_i <- markers_of_interest[grep(marker_i, markers_of_interest)]
+
+  # Subset the PERMANOVA results for the current marker
+  permanova_i <- subset(permanova_results_df, distance_metric == marker_of_interest_i)
+  
+  # Extract and format the PERMANOVA statistics for the current marker
+  r2_value <- round(permanova_i$R2, 3)
+  f_value <- round(permanova_i$F, 3)
+  p_value <- permanova_i$p_value
+  p_value_text <- ifelse(p_value < 0.001, "< 0.001", paste0("= ", round(p_value, 3)))
+  
+  # Extract and format the stress value for the current marker
+  stress_value <- round(data_i$stress[1], 3)
+
+  # Create the annotation text with PERMANOVA results and stress value
+  annotation_text <- paste0("PERMANOVA\nR² = ", r2_value, "\nF = ", f_value, "\np ", p_value_text, "\nStress: ", stress_value)
+  
+  # Create the plot for the current marker
+  p <- ggplot(data_i, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(alpha = 0.7, size = 3) +
+    ggtitle(paste("Bray–Curtis dissimilarity NMDS -", marker_i)) +
+    xlab(data_i$xlab[1]) +  # Dynamic X-axis title
+    ylab(data_i$ylab[1]) +  # Dynamic Y-axis title
+    theme_pubr() +
+    theme(legend.position = c(0.01, 0.99), 
+          plot.title = element_text(hjust = 0.5, size = 13),
+          legend.box = "vertical",  
+          legend.justification = c("left", "top"),  
+          legend.box.just = "left", 
+          panel.grid.major = element_line(color = "lightgrey", linetype = "dashed"),
+          legend.text = element_text(size = 10, margin = margin(l = 0)), 
+          legend.title = element_text(size = 11, hjust = 0, vjust = -2),           
+          legend.spacing.x = unit(0, 'cm'),  
+          legend.margin = margin(t = -1, r = 0, b = 0, l = -1),
+          legend.key.width = unit(0.5, 'cm'),
+          axis.text.x = element_blank(),  # Hide X-axis tick values
+          axis.text.y = element_blank(),  # Hide Y-axis tick values
+          axis.ticks = element_blank()    # Remove axis ticks
+    ) +
+    scale_shape_manual(values = c(14, 1), name = "Season") +
+    scale_color_manual(values = c("#FF0000", "#0000FF"), name = "Season") +
+    stat_ellipse(linetype = 2, show.legend = FALSE) +
+    scale_x_continuous(limits = c(-2, 2),      # X-axis limits
+                        expand = c(0, 0)
+    ) +
+    scale_y_continuous(limits = c(-2, 2),      # X-axis limits
+                        expand = c(0, 0)
+    ) +
+    annotate("text", x = 1.5, y = 1.5, label = annotation_text, 
+             hjust = 0.5, vjust = 0.5, size = 3, color = "black")
+  
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+# Determine the number of columns for arranging the plots
+num_markers <- length(markers)
+ncol_layout <- ifelse(num_markers <= 3, num_markers, 3)  # Adjust as needed
+
+# Save the arranged plots to a PDF file
+pdf("css_bray_curtis_nmds_all.pdf", width = 12, height = 4 * ceiling(num_markers / ncol_layout))
+
+# Arrange and display the plots
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+
+dev.off()
+
+```
+
+
+######### canberra
+
+```{r}
+# List of canberra objects and their names
+canberra_list <- list(
+  canberra_16S = canberra_16S,
+  canberra_18S = canberra_18S,
+  canberra_ITS = canberra_ITS
+)
+
+# Initialize an empty list to store the modified nmds_df data frames
+canberra_nmds_list <- list()
+
+# Loop through each canberra object
+for (canberra_name in names(canberra_list)) {
+  
+  # Extract the nmds_df and stress value
+  nmds_df <- canberra_list[[canberra_name]]$nmds_df
+  stress_value <- canberra_list[[canberra_name]]$stress  # Assuming stress is part of the NMDS result
+  marker <- gsub("canberra_", "", canberra_name)  # Extract marker name
+  
+  # Add stress value to nmds_df
+  nmds_df$stress <- stress_value
+  
+  # Add marker to nmds_df
+  nmds_df$Marker <- marker
+  
+  # Add custom axis labels (no eigenvalues, so no % variance explained)
+  nmds_df$xlab <- "NMDS1"
+  nmds_df$ylab <- "NMDS2"
+  
+  # Store in the list
+  canberra_nmds_list[[marker]] <- nmds_df
+}
+
+# Combine all nmds_df data frames into one for Canberra
+combined_canberra_nmds_df <- do.call(rbind, canberra_nmds_list)
+
+# Get the unique markers from your data
+markers <- unique(combined_canberra_nmds_df$Marker)
+
+# Define a vector of markers of interest for PERMANOVA results
+markers_of_interest <- c("canberra_16S", "canberra_18S", "canberra_ITS")
+
+# Initialize a list to store individual plots
+plot_list <- list()
+
+# Loop over each marker to create individual plots
+for (i in seq_along(markers)) {
+  marker_i <- markers[i]
+  
+  # Subset the data for the current marker
+  data_i <- subset(combined_canberra_nmds_df, Marker == marker_i)
+  
+  # Find the matching marker in the markers_of_interest vector
+  marker_of_interest_i <- markers_of_interest[grep(marker_i, markers_of_interest)]
+
+  # Subset the PERMANOVA results for the current marker
+  permanova_i <- subset(permanova_results_df, distance_metric == marker_of_interest_i)
+  
+  # Extract and format the PERMANOVA statistics for the current marker
+  r2_value <- round(permanova_i$R2, 3)
+  f_value <- round(permanova_i$F, 3)
+  p_value <- permanova_i$p_value
+  p_value_text <- ifelse(p_value < 0.001, "< 0.001", paste0("= ", round(p_value, 3)))
+  
+  # Extract and format the stress value for the current marker
+  stress_value <- round(data_i$stress[1], 3)
+
+  # Create the annotation text with PERMANOVA results and stress value
+  annotation_text <- paste0("PERMANOVA\nR² = ", r2_value, "\nF = ", f_value, "\np ", p_value_text, "\nStress: ", stress_value)
+
+  # Create the plot for the current marker
+  p <- ggplot(data_i, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(alpha = 0.7, size = 3) +
+    ggtitle(paste("Canberra coefficient NMDS -", marker_i)) +
+    xlab(data_i$xlab[1]) +  # Dynamic X-axis title
+    ylab(data_i$ylab[1]) +  # Dynamic Y-axis title
+    theme_pubr() +
+    theme(legend.position = c(0.01, 0.99), 
+          plot.title = element_text(hjust = 0.5, size = 13),
+          legend.box = "vertical",  
+          legend.justification = c("left", "top"),  
+          legend.box.just = "left", 
+          panel.grid.major = element_line(color = "lightgrey", linetype = "dashed"),
+          legend.text = element_text(size = 10, margin = margin(l = 0)), 
+          legend.title = element_text(size = 11, hjust = 0, vjust = -2),           
+          legend.spacing.x = unit(0, 'cm'),  
+          legend.margin = margin(t = -1, r = 0, b = 0, l = -1),
+          legend.key.width = unit(0.5, 'cm'),
+          axis.text.x = element_blank(),  # Hide X-axis tick values
+          axis.text.y = element_blank(),  # Hide Y-axis tick values
+          axis.ticks = element_blank()    # Remove axis ticks
+    ) +
+    scale_shape_manual(values = c(14, 1), name = "Season") +
+    scale_color_manual(values = c("#FF0000", "#0000FF"), name = "Season") +
+    stat_ellipse(linetype = 2, show.legend = FALSE) +
+    scale_x_continuous(limits = c(-2, 2),      # X-axis limits
+                        expand = c(0, 0)
+    ) +
+    scale_y_continuous(limits = c(-2, 2),      # Y-axis limits
+                        expand = c(0, 0)
+    ) +
+    annotate("text", x = 1.5, y = 1.5, label = annotation_text, 
+             hjust = 0.5, vjust = 0.5, size = 3, color = "black")
+  
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+# Determine the number of columns for arranging the plots
+num_markers <- length(markers)
+ncol_layout <- ifelse(num_markers <= 3, num_markers, 3)  # Adjust as needed
+
+# Save the arranged plots to a PDF file
+pdf("css_canberra_nmds_all.pdf", width = 12, height = 4 * ceiling(num_markers / ncol_layout))
+
+# Arrange and display the plots
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+
+dev.off()
+
+```
+
+# Jaccard
+
+```{r}
+# List of jaccard objects and their names
+jaccard_list <- list(
+  jaccard_16S = jaccard_16S,
+  jaccard_18S = jaccard_18S,
+  jaccard_ITS = jaccard_ITS
+)
+
+# Initialize an empty list to store the modified nmds_df data frames
+jaccard_nmds_list <- list()
+
+# Loop through each jaccard object
+for (jaccard_name in names(jaccard_list)) {
+  
+  # Extract the nmds_df and stress value
+  nmds_df <- jaccard_list[[jaccard_name]]$nmds_df
+  stress_value <- jaccard_list[[jaccard_name]]$stress  # Assuming stress is part of the NMDS result
+  marker <- gsub("jaccard_", "", jaccard_name)  # Extract marker name
+  
+  # Add stress value to nmds_df
+  nmds_df$stress <- stress_value
+  
+  # Add marker to nmds_df
+  nmds_df$Marker <- marker
+  
+  # Add custom axis labels (no eigenvalues, so no % variance explained)
+  nmds_df$xlab <- "NMDS1"
+  nmds_df$ylab <- "NMDS2"
+  
+  # Store in the list
+  jaccard_nmds_list[[marker]] <- nmds_df
+}
+
+# Combine all nmds_df data frames into one for Jaccard
+combined_jaccard_nmds_df <- do.call(rbind, jaccard_nmds_list)
+
+# Get the unique markers from your data
+markers <- unique(combined_jaccard_nmds_df$Marker)
+
+# Define a vector of markers of interest for PERMANOVA results
+markers_of_interest <- c("jaccard_16S", "jaccard_18S", "jaccard_ITS")
+
+# Initialize a list to store individual plots
+plot_list <- list()
+
+# Loop over each marker to create individual plots
+for (i in seq_along(markers)) {
+  marker_i <- markers[i]
+  
+  # Subset the data for the current marker
+  data_i <- subset(combined_jaccard_nmds_df, Marker == marker_i)
+  
+  # Find the matching marker in the markers_of_interest vector
+  marker_of_interest_i <- markers_of_interest[grep(marker_i, markers_of_interest)]
+
+  # Subset the PERMANOVA results for the current marker
+  permanova_i <- subset(permanova_results_df, distance_metric == marker_of_interest_i)
+  
+  # Extract and format the PERMANOVA statistics for the current marker
+  r2_value <- round(permanova_i$R2, 3)
+  f_value <- round(permanova_i$F, 3)
+  p_value <- permanova_i$p_value
+  p_value_text <- ifelse(p_value < 0.001, "< 0.001", paste0("= ", round(p_value, 3)))
+  
+  # Extract and format the stress value for the current marker
+  stress_value <- round(data_i$stress[1], 3)
+
+  # Create the annotation text with PERMANOVA results and stress value
+  annotation_text <- paste0("PERMANOVA\nR² = ", r2_value, "\nF = ", f_value, "\np ", p_value_text, "\nStress: ", stress_value)
+
+  # Create the plot for the current marker
+  p <- ggplot(data_i, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(alpha = 0.7, size = 3) +
+    ggtitle(paste("Jaccard coefficient NMDS -", marker_i)) +
+    xlab(data_i$xlab[1]) +  # Dynamic X-axis title
+    ylab(data_i$ylab[1]) +  # Dynamic Y-axis title
+    theme_pubr() +
+    theme(legend.position = c(0.01, 0.99), 
+          plot.title = element_text(hjust = 0.5, size = 13),
+          legend.box = "vertical",  
+          legend.justification = c("left", "top"),  
+          legend.box.just = "left", 
+          panel.grid.major = element_line(color = "lightgrey", linetype = "dashed"),
+          legend.text = element_text(size = 10, margin = margin(l = 0)), 
+          legend.title = element_text(size = 11, hjust = 0, vjust = -2),           
+          legend.spacing.x = unit(0, 'cm'),  
+          legend.margin = margin(t = -1, r = 0, b = 0, l = -1),
+          legend.key.width = unit(0.5, 'cm'),
+          axis.text.x = element_blank(),  # Hide X-axis tick values
+          axis.text.y = element_blank(),  # Hide Y-axis tick values
+          axis.ticks = element_blank()    # Remove axis ticks
+    ) +
+    scale_shape_manual(values = c(14, 1), name = "Season") +
+    scale_color_manual(values = c("#FF0000", "#0000FF"), name = "Season") +
+    stat_ellipse(linetype = 2, show.legend = FALSE) +
+    scale_x_continuous(limits = c(-2, 2),      # X-axis limits
+                        expand = c(0, 0)
+    ) +
+    scale_y_continuous(limits = c(-2, 2),      # Y-axis limits
+                        expand = c(0, 0)
+    ) +
+    annotate("text", x = 1.5, y = 1.5, label = annotation_text, 
+             hjust = 0.5, vjust = 0.5, size = 3, color = "black")
+  
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+# Determine the number of columns for arranging the plots
+num_markers <- length(markers)
+ncol_layout <- ifelse(num_markers <= 3, num_markers, 3)  # Adjust as needed
+
+# Save the arranged plots to a PDF file
+pdf("css_jaccard_nmds_all.pdf", width = 12, height = 4 * ceiling(num_markers / ncol_layout))
+
+# Arrange and display the plots
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+
+dev.off()
+
+
+```
+
+
+
+#Unw Unifrac
+
+```{r}
+# Extract the numeric part of the stress_label and convert to numeric
+combined_unweighted_nmds_df$stress <- as.numeric(sub("Stress: ", "", combined_unweighted_nmds_df$stress_label))
+
+# Add the 'Season' column from df_metadata to combined_unweighted_nmds_df by matching on 'Sample'
+combined_unweighted_nmds_df$Season <- metadata$Season[match(combined_unweighted_nmds_df$Sample, metadata$Sample)]
+
+# Get the unique markers from your data
+markers <- unique(combined_unweighted_nmds_df$Marker)
+
+# Define a vector of markers of interest for PERMANOVA results
+markers_of_interest <- c("unweighted_unifrac_16S", "unweighted_unifrac_18S", "unweighted_unifrac_ITS")
+
+# Initialize a list to store individual plots
+plot_list <- list()
+
+# Loop over each marker to create individual plots
+for (i in seq_along(markers)) {
+  marker_i <- markers[i]
+  
+  # Subset the data for the current marker
+  data_i <- subset(combined_unweighted_nmds_df, Marker == marker_i)
+  
+  # Find the matching marker in the markers_of_interest vector
+  marker_of_interest_i <- markers_of_interest[grep(marker_i, markers_of_interest)]
+
+  # Subset the PERMANOVA results for the current marker
+  permanova_i <- subset(permanova_results_df, distance_metric == marker_of_interest_i)
+  
+  # Extract and format the PERMANOVA statistics for the current marker
+  r2_value <- round(permanova_i$R2, 3)
+  f_value <- round(permanova_i$F, 3)
+  p_value <- permanova_i$p_value
+  p_value_text <- ifelse(p_value < 0.001, "< 0.001", paste0("= ", round(p_value, 3)))
+  
+# Extract and format the stress value for the current marker
+  stress_value <- round(data_i$stress[1], 3)
+
+  # Create the annotation text with PERMANOVA results and stress value
+  annotation_text <- paste0("PERMANOVA\nR² = ", r2_value, "\nF = ", f_value, "\np ", p_value_text, "\nStress: ", stress_value)
+  
+  # Create the plot for the current marker
+  p <- ggplot(data_i, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(alpha = 0.7, size = 3) +
+    ggtitle(paste("Unweighted UniFrac NMDS -", marker_i)) +
+    xlab(data_i$xlab[1]) +  # Dynamic X-axis title
+    ylab(data_i$ylab[1]) +  # Dynamic Y-axis title
+    theme_pubr() +
+    theme(legend.position = c(0.01, 0.99), 
+          plot.title = element_text(hjust = 0.5, size = 13),
+          legend.box = "vertical",  
+          legend.justification = c("left", "top"),  
+          legend.box.just = "left", 
+          panel.grid.major = element_line(color = "lightgrey", linetype = "dashed"),
+          legend.text = element_text(size = 10, margin = margin(l = 0)), 
+          legend.title = element_text(size = 11, hjust = 0, vjust = -2),           
+          legend.spacing.x = unit(0, 'cm'),  
+          legend.margin = margin(t = -1, r = 0, b = 0, l = -1),
+          legend.key.width = unit(0.5, 'cm'),
+          axis.text.x = element_blank(),  # Hide X-axis tick values
+          axis.text.y = element_blank(),  # Hide Y-axis tick values
+          axis.ticks = element_blank()    # Remove axis ticks
+    ) +
+    scale_shape_manual(values = c(14, 1), name = "Season") +
+    scale_color_manual(values = c("#FF0000", "#0000FF"), name = "Season") +
+    stat_ellipse(linetype = 2, show.legend = FALSE) +
+     scale_x_continuous(limits = c(-2, 2),      # X-axis limits
+                        expand = c(0, 0)
+    ) +
+    scale_y_continuous(limits = c(-2, 2),      # Y-axis limits
+                        expand = c(0, 0)
+    ) +
+    annotate("text", x = 1.5, y = 1.5, label = annotation_text, 
+             hjust = 0.5, vjust = 0.5, size = 3, color = "black")
+  
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+# Determine the number of columns for arranging the plots
+num_markers <- length(markers)
+ncol_layout <- ifelse(num_markers <= 3, num_markers, 3)  # Adjust as needed
+
+# Save the arranged plots to a PDF file
+pdf("css_unweighted_unifrac_nmds_all.pdf", width = 12, height = 4 * ceiling(num_markers / ncol_layout))
+
+# Arrange and display the plots
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+
+dev.off()
+
+
+```
+
+## Weighted Unif
+
+```{r}
+# Extract the numeric part of the stress_label and convert to numeric
+combined_weighted_nmds_df$stress <- as.numeric(sub("Stress: ", "", combined_weighted_nmds_df$stress_label))
+
+# Add the 'Season' column from df_metadata to combined_weighted_nmds_df by matching on 'Sample'
+combined_weighted_nmds_df$Season <- metadata$Season[match(combined_weighted_nmds_df$Sample, metadata$Sample)]
+
+# Get the unique markers from your data
+markers <- unique(combined_weighted_nmds_df$Marker)
+
+# Define a vector of markers of interest for PERMANOVA results
+markers_of_interest <- c("weighted_unifrac_16S", "weighted_unifrac_18S", "weighted_unifrac_ITS")
+
+# Initialize a list to store individual plots
+plot_list <- list()
+
+# Loop over each marker to create individual plots
+for (i in seq_along(markers)) {
+  marker_i <- markers[i]
+  
+  # Subset the data for the current marker
+  data_i <- subset(combined_weighted_nmds_df, Marker == marker_i)
+  
+  # Find the matching marker in the markers_of_interest vector
+  marker_of_interest_i <- markers_of_interest[grep(marker_i, markers_of_interest)]
+
+  # Subset the PERMANOVA results for the current marker
+  permanova_i <- subset(permanova_results_df, distance_metric == marker_of_interest_i)
+  
+  # Extract and format the PERMANOVA statistics for the current marker
+  r2_value <- round(permanova_i$R2, 3)
+  f_value <- round(permanova_i$F, 3)
+  p_value <- permanova_i$p_value
+  p_value_text <- ifelse(p_value < 0.001, "< 0.001", paste0("= ", round(p_value, 3)))
+  
+  # Extract and format the stress value for the current marker
+  stress_value <- round(data_i$stress[1], 3)
+
+  # Create the annotation text with PERMANOVA results and stress value
+  annotation_text <- paste0("PERMANOVA\nR² = ", r2_value, "\nF = ", f_value, "\np ", p_value_text, "\nStress: ", stress_value)
+  
+  # Create the plot for the current marker
+  p <- ggplot(data_i, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(alpha = 0.7, size = 3) +
+    ggtitle(paste("Weighted UniFrac NMDS -", marker_i)) +
+    xlab(data_i$xlab[1]) +  # Dynamic X-axis title
+    ylab(data_i$ylab[1]) +  # Dynamic Y-axis title
+    theme_pubr() +
+    theme(legend.position = c(0.01, 0.99), 
+          plot.title = element_text(hjust = 0.5, size = 13),
+          legend.box = "vertical",  
+          legend.justification = c("left", "top"),  
+          legend.box.just = "left", 
+          panel.grid.major = element_line(color = "lightgrey", linetype = "dashed"),
+          legend.text = element_text(size = 10, margin = margin(l = 0)), 
+          legend.title = element_text(size = 11, hjust = 0, vjust = -2),           
+          legend.spacing.x = unit(0, 'cm'),  
+          legend.margin = margin(t = -1, r = 0, b = 0, l = -1),
+          legend.key.width = unit(0.5, 'cm'),
+          axis.text.x = element_blank(),  # Hide X-axis tick values
+          axis.text.y = element_blank(),  # Hide Y-axis tick values
+          axis.ticks = element_blank()    # Remove axis ticks
+    ) +
+    scale_shape_manual(values = c(14, 1), name = "Season") +
+    scale_color_manual(values = c("#FF0000", "#0000FF"), name = "Season") +
+    stat_ellipse(linetype = 2, show.legend = FALSE) +
+     scale_x_continuous(limits = c(-2, 2),      # X-axis limits
+                        expand = c(0, 0)
+    ) +
+    scale_y_continuous(limits = c(-2, 2),      # Y-axis limits
+                        expand = c(0, 0)
+    ) +
+    annotate("text", x = 1.5, y = 1.5, label = annotation_text, 
+             hjust = 0.5, vjust = 0.5, size = 3, color = "black")
+  
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+# Determine the number of columns for arranging the plots
+num_markers <- length(markers)
+ncol_layout <- ifelse(num_markers <= 3, num_markers, 3)  # Adjust as needed
+
+# Save the arranged plots to a PDF file
+pdf("css_weighted_unifrac_nmds_all.pdf", width = 12, height = 4 * ceiling(num_markers / ncol_layout))
+
+# Arrange and display the plots
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+
+dev.off()
+
+```
+
+
+
+### Biplots
+
+
+
+```{r}
+markers_of_interest <- c("16S", "18S", "ITS")
+plot_list <- list()
+
+for (i in seq_along(markers_of_interest)) {
+  marker_i <- markers_of_interest[i]
+  
+  if (marker_i == "16S") {
+    nmds_coords <- bray_curtis_nmds_coords_16S
+    order_scores_df <- bray_curtis_Order_scores_df_16S
+
+    nmds_coords$NMDS1 <- scales::rescale(nmds_coords$NMDS1, to = c(-1, 1))
+    nmds_coords$NMDS2 <- scales::rescale(nmds_coords$NMDS2, to = c(-1, 1))
+    order_scores_df$NMDS1 <- scales::rescale(order_scores_df$NMDS1, to = c(-1, 1))
+    order_scores_df$NMDS2 <- scales::rescale(order_scores_df$NMDS2, to = c(-1, 1))
+    
+    order_scores_df <- order_scores_df %>%
+      mutate(magnitude = sqrt(NMDS1^2 + NMDS2^2))
+    
+    top_orders <- order_scores_df %>%
+      arrange(desc(magnitude)) %>%
+      slice_head(n = 6)
+    
+    p <- ggplot(nmds_coords, aes(x = NMDS1, y = NMDS2, color = Season)) +
+      geom_point(size = 4, alpha = 0.5) + 
+      geom_segment(data = order_scores_df, aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+                   arrow = arrow(length = unit(0.2, "cm")), color = "black") + 
+      geom_text_repel(data = top_orders, aes(x = NMDS1, y = NMDS2, label = Order), 
+                      size = 3, color = "black", 
+                      force = 50,
+                      direction = "both",
+                      point.padding = 0.8,
+                      box.padding = 2,
+                      segment.size = 0.4,
+                      min.segment.length = 0,
+                      max.overlaps = Inf,
+                      seed = 42
+                     ) +
+      ggtitle(paste("Bray-Curtis NMDS Biplot (Filtered Orders) -", marker_i)) +
+      stat_ellipse(type = "norm", level = 0.8, alpha = 0.1, aes(fill = Season), 
+                   geom = "polygon", color = NA) +
+      xlab("NMDS1") +
+      ylab("NMDS2") +
+      theme_pubr() +
+      scale_shape_manual(values = c(14, 1)) +
+      scale_color_manual(values = c("#FF0000", "#0000FF")) +
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5, size = 10),
+            axis.ticks = element_blank(),
+            axis.text = element_blank()) +
+      scale_x_continuous(limits = c(-2, 2), expand = c(0, 0)) +
+      scale_y_continuous(limits = c(-2, 2), expand = c(0, 0))
+  
+  } else if (marker_i == "18S") {
+    nmds_coords <- bray_curtis_nmds_coords_18S
+    order_scores_df <- bray_curtis_Order_scores_df_18S
+
+    nmds_coords$NMDS1 <- scales::rescale(nmds_coords$NMDS1, to = c(-1, 1))
+    nmds_coords$NMDS2 <- scales::rescale(nmds_coords$NMDS2, to = c(-1, 1))
+    order_scores_df$NMDS1 <- scales::rescale(order_scores_df$NMDS1, to = c(-1, 1))
+    order_scores_df$NMDS2 <- scales::rescale(order_scores_df$NMDS2, to = c(-1, 1))
+    
+    order_scores_df <- order_scores_df %>%
+      mutate(magnitude = sqrt(NMDS1^2 + NMDS2^2))
+    
+    top_orders <- order_scores_df %>%
+      arrange(desc(magnitude)) %>%
+      slice_head(n = 6)
+
+    p <- ggplot(nmds_coords, aes(x = NMDS1, y = NMDS2, color = Season)) +
+      geom_point(size = 4, alpha = 0.5) + 
+      geom_segment(data = order_scores_df, aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+                   arrow = arrow(length = unit(0.2, "cm")), color = "black") + 
+      geom_text_repel(data = top_orders, aes(x = NMDS1, y = NMDS2, label = Order), 
+                        size = 3, color = "black", 
+                      force = 50,
+                      direction = "both",
+                      point.padding = 0.8,
+                      box.padding = 2,
+                      segment.size = 0.4,
+                      min.segment.length = 0,
+                      max.overlaps = Inf,
+                      seed = 42
+                     ) +
+      ggtitle(paste("Bray-Curtis NMDS Biplot (Filtered Orders) -", marker_i)) +
+      stat_ellipse(type = "norm", level = 0.8, alpha = 0.1, aes(fill = Season), 
+                   geom = "polygon", color = NA) +
+      xlab("NMDS1") +
+      ylab("NMDS2") +
+      theme_pubr() +
+      scale_shape_manual(values = c(14, 1)) +
+      scale_color_manual(values = c("#FF0000", "#0000FF")) +
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5, size = 10),
+            axis.ticks = element_blank(),
+            axis.text = element_blank()) +
+      scale_x_continuous(limits = c(-2, 2), expand = c(0, 0)) +
+      scale_y_continuous(limits = c(-2, 2), expand = c(0, 0))
+
+  } else if (marker_i == "ITS") {
+    nmds_coords <- bray_curtis_nmds_coords_ITS
+    order_scores_df <- bray_curtis_Order_scores_df_ITS
+
+    nmds_coords$NMDS1 <- scales::rescale(nmds_coords$NMDS1, to = c(-1, 1))
+    nmds_coords$NMDS2 <- scales::rescale(nmds_coords$NMDS2, to = c(-1, 1))
+    order_scores_df$NMDS1 <- scales::rescale(order_scores_df$NMDS1, to = c(-1, 1))
+    order_scores_df$NMDS2 <- scales::rescale(order_scores_df$NMDS2, to = c(-1, 1))
+    
+    order_scores_df <- order_scores_df %>%
+      mutate(magnitude = sqrt(NMDS1^2 + NMDS2^2))
+    
+    top_orders <- order_scores_df %>%
+      arrange(desc(magnitude)) %>%
+      slice_head(n = 6)
+
+    p <- ggplot(nmds_coords, aes(x = NMDS1, y = NMDS2, color = Season)) +
+      geom_point(size = 4, alpha = 0.5) + 
+      geom_segment(data = order_scores_df, aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+                   arrow = arrow(length = unit(0.2, "cm")), color = "black") + 
+      geom_text_repel(data = top_orders, aes(x = NMDS1, y = NMDS2, label = Order), 
+                        size = 3, color = "black", 
+                      force = 50,
+                      direction = "both",
+                      point.padding = 0.8,
+                      box.padding = 2,
+                      segment.size = 0.4,
+                      min.segment.length = 0,
+                      max.overlaps = Inf,
+                      seed = 42
+                     ) +
+      ggtitle(paste("Bray-Curtis NMDS Biplot (Filtered Orders) -", marker_i)) +
+      stat_ellipse(type = "norm", level = 0.8, alpha = 0.1, aes(fill = Season), 
+                   geom = "polygon", color = NA) +
+      xlab("NMDS1") +
+      ylab("NMDS2") +
+      theme_pubr() +
+      scale_shape_manual(values = c(14, 1)) +
+      scale_color_manual(values = c("#FF0000", "#0000FF")) +
+      theme(legend.position = "none",
+            plot.title = element_text(hjust = 0.5, size = 10),
+            axis.ticks = element_blank(),
+            axis.text = element_blank()) +
+      scale_x_continuous(limits = c(-2, 2), expand = c(0, 0)) +
+      scale_y_continuous(limits = c(-2, 2), expand = c(0, 0))
+  }
+
+  plot_list[[i]] <- p
+}
+
+ncol_layout <- ifelse(length(markers_of_interest) <= 3, length(markers_of_interest), 3)
+
+pdf("combined_bray_curtis_biplots.pdf", width = 12, height = 4 * ceiling(length(markers_of_interest) / ncol_layout))
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+dev.off()
+
+
+```
+
+```{r}
+markers_of_interest <- c("16S", "18S", "ITS")
+plot_list <- list()
+
+for (i in seq_along(markers_of_interest)) {
+  marker <- markers_of_interest[i]
+  
+  if (marker == "16S") {
+    nmds_coords <- jaccard_nmds_coords_16S
+    scores_df <- jaccard_Order_scores_df_16S
+  } else if (marker == "18S") {
+    nmds_coords <- jaccard_nmds_coords_18S
+    scores_df <- jaccard_Order_scores_df_18S
+  } else if (marker == "ITS") {
+    nmds_coords <- jaccard_nmds_coords_ITS
+    scores_df <- jaccard_Order_scores_df_ITS
+  }
+  
+  nmds_coords$NMDS1 <- scales::rescale(nmds_coords$NMDS1, to = c(-1, 1))
+  nmds_coords$NMDS2 <- scales::rescale(nmds_coords$NMDS2, to = c(-1, 1))
+  scores_df$NMDS1 <- scales::rescale(scores_df$NMDS1, to = c(-1, 1))
+  scores_df$NMDS2 <- scales::rescale(scores_df$NMDS2, to = c(-1, 1))
+  
+  scores_df <- scores_df %>%
+    mutate(magnitude = sqrt(NMDS1^2 + NMDS2^2))
+  
+  top_orders <- scores_df %>%
+    arrange(desc(magnitude)) %>%
+    slice_head(n = 6)
+  
+  p <- ggplot(nmds_coords, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(size = 4, alpha = 0.5) + 
+    geom_segment(data = scores_df, aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+                 arrow = arrow(length = unit(0.2, "cm")), color = "black") + 
+    geom_text_repel(data = top_orders, aes(x = NMDS1, y = NMDS2, label = Order), 
+                    size = 3, color = "black", 
+                    force = 10,
+                    direction = "both",
+                    point.padding = 0.2,
+                    box.padding = 2,
+                    nudge_x = -0.03,
+                    segment.size = 0.4,
+                    min.segment.length = 0,
+                    max.overlaps = Inf,
+                    seed = 42) +
+    ggtitle(paste("Jaccard NMDS Biplot (Filtered Orders) -", marker)) +
+    xlab("NMDS1") +
+    ylab("NMDS2") +
+    stat_ellipse(type = "norm", 
+                 level = 0.8, 
+                 alpha = 0.1, 
+                 aes(fill = Season), 
+                 geom = "polygon", 
+                 color = NA) +
+    theme_pubr() +
+    scale_shape_manual(values = c(14, 1)) +
+    scale_color_manual(values = c("#FF0000", "#0000FF")) +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, size = 10),
+          axis.title = element_text(size = 11),
+           axis.ticks = element_blank(),
+            axis.text = element_blank()) +
+    scale_x_continuous(limits = c(-2, 2), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(-2, 2), expand = c(0, 0))
+  
+  plot_list[[i]] <- p
+}
+
+ncol_layout <- ifelse(length(markers_of_interest) <= 3, length(markers_of_interest), 3)
+
+pdf("combined_jaccard_nmds_biplots.pdf", width = 12, height = 4 * ceiling(length(markers_of_interest) / ncol_layout))
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+dev.off()
+
+
+```
+
+
+```{r}
+markers_of_interest <- c("16S", "18S", "ITS")
+plot_list <- list()
+
+for (i in seq_along(markers_of_interest)) {
+  marker <- markers_of_interest[i]
+  
+  if (marker == "16S") {
+    nmds_coords <- canberra_nmds_coords_16S
+    scores_df <- canberra_Order_scores_df_16S
+  } else if (marker == "18S") {
+    nmds_coords <- canberra_nmds_coords_18S
+    scores_df <- canberra_Order_scores_df_18S
+  } else if (marker == "ITS") {
+    nmds_coords <- canberra_nmds_coords_ITS
+    scores_df <- canberra_Order_scores_df_ITS
+  }
+  
+  scores_df <- scores_df %>%
+    mutate(magnitude = sqrt(NMDS1^2 + NMDS2^2))
+  
+  top_orders <- scores_df %>%
+    arrange(desc(magnitude)) %>%
+    slice_head(n = 6)
+  
+  p <- ggplot(nmds_coords, aes(x = NMDS1, y = NMDS2, color = Season)) +
+    geom_point(size = 4, alpha = 0.4) + 
+    geom_segment(data = scores_df, aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+                 arrow = arrow(length = unit(0.2, "cm")), color = "black") + 
+    geom_text_repel(data = top_orders, aes(x = NMDS1, y = NMDS2, label = Order),
+                    size = 3, color = "black", 
+                    force = 10,
+                    direction = "both",
+                    point.padding = 0.2,
+                    box.padding = 2,
+                    #nudge_x = -0.03,
+                    segment.size = 0.4,
+                    min.segment.length = 0,
+                    max.overlaps = Inf,
+                    seed = 42) +
+    ggtitle(paste("Canberra NMDS Biplot (Filtered Orders) -", marker)) +
+    xlab("NMDS1") +
+    ylab("NMDS2") +
+    theme_pubr() +
+    stat_ellipse(type = "norm", level = 0.8, alpha = 0.1, aes(fill = Season), geom = "polygon", color = NA) +
+    scale_shape_manual(values = c(14, 1)) +
+    scale_color_manual(values = c("#FF0000", "#0000FF")) +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, size = 10),
+          axis.title = element_text(size = 11),
+          axis.ticks = element_blank(),
+            axis.text = element_blank()) +
+    scale_x_continuous(limits = c(-2, 2), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(-2, 2), expand = c(0, 0))
+  plot_list[[i]] <- p
+}
+
+ncol_layout <- ifelse(length(markers_of_interest) <= 3, length(markers_of_interest), 3)
+
+pdf("combined_canberra_biplots.pdf", width = 12, height = 4 * ceiling(length(markers_of_interest) / ncol_layout))
+grid.arrange(grobs = plot_list, ncol = ncol_layout)
+dev.off()
+
+
+```
+
+
+

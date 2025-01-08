@@ -1,0 +1,460 @@
+---
+title: "Untitled"
+author: "Breno"
+date: "2024-09-16"
+output: html_document
+---
+```{r}
+library(GGally)
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(gridExtra)
+library(tidyr)
+library(scales)
+```
+
+
+```{r}
+Chlorophyta18S <- filtered_combined_data %>%
+  filter(Phylum == "Chlorophyta") %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  group_by(Sample, Season) %>%
+  summarise(CLR_CZM = sum(CLR_CZM), .groups = "drop") %>%
+  mutate(
+    Season = as.factor(Season),
+    CLR_CZM = (CLR_CZM - min(CLR_CZM)) / (max(CLR_CZM) - min(CLR_CZM)),
+    Marker = "18S"
+  )
+
+Chlorophyta16S <- ps_tbl_16s_euka %>%
+  filter(Phylum == "Chlorophyta") %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  group_by(Sample, Season) %>%
+  summarise(CLR_CZM = sum(CLR_CZM), .groups = "drop") %>%
+  mutate(
+    Season = as.factor(Season),
+    CLR_CZM = (CLR_CZM - min(CLR_CZM)) / (max(CLR_CZM) - min(CLR_CZM)),
+    Marker = "16S"
+  )
+
+Chlorophyta <- bind_rows(Chlorophyta18S, Chlorophyta16S)
+
+pivot_data_Chlorophyta <- Chlorophyta %>%
+  select(Sample, Marker, CLR_CZM) %>%
+  pivot_wider(names_from = Marker, values_from = CLR_CZM, names_prefix = "CLR_")
+
+pivot_data_Chlorophyta <- pivot_data_Chlorophyta %>%
+  left_join(combined_data %>% select(Sample, Season) %>% distinct(), by = "Sample")
+
+model <- lm(CLR_18S ~ CLR_16S, data = pivot_data_Chlorophyta)
+r_squared <- summary(model)$r.squared
+
+season_colors <- c("Dry" = "#FF0000", "Wet" = "#0000FF")
+color_mapping <- season_colors[pivot_data_Chlorophyta$Season]
+```
+
+
+```{r}
+pdf("Chlorophyta_16s_18s_CLR1.pdf", width=4, height=4.5)
+scatter_plot <- ggplot(pivot_data_Chlorophyta, aes(x = CLR_16S, y = CLR_18S)) +
+  geom_point(aes(fill = Season), color = "black", shape = 22, size = 3, stroke = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  annotate("text", x = max(pivot_data_Chlorophyta$CLR_16S, na.rm = TRUE),
+           y = min(pivot_data_Chlorophyta$CLR_18S, na.rm = TRUE),
+           label = bquote(R^2 == .(round(r_squared, 2))), size = 5,
+           hjust = 1, vjust = 0) +
+   scale_x_continuous(expand = c(0, 0), 
+                   limits = c(-0.25, 1.3),
+                   breaks = seq(-0.25, 1.25, by = 0.5)) +
+  scale_y_continuous(expand = c(0, 0), 
+                   limits = c(-0.25, 1.3),
+                   breaks = seq(-0.25, 1.25, by = 0.5)) +
+  theme_pubr() + 
+  labs(
+    y = "Chlorophyta Reads − Scaled CLR-CZM (18S)",
+    x = "Chlorophyta Reads − Scaled CLR-CZM (16S)",
+    fill = "Season") + 
+ theme(
+  axis.text = element_text(size = 10),
+  axis.title = element_text(size = 11),
+  axis.text.x = element_text(angle = 0, hjust = 0.5),
+  plot.title = element_text(hjust = 0.5, margin = margin(b = 10)),  # Reduced bottom margin
+  legend.position = c(0.01, 0.99),
+  legend.justification = c("left", "top"),
+  legend.box.just = "left",
+  legend.text = element_text(size = 12),
+  legend.title = element_text(size = 14, vjust = -0.8),
+  legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+  legend.spacing.x = unit(0.1, "cm"),  # Reduced horizontal spacing
+  legend.spacing.y = unit(0.1, "cm"),  # Reduced vertical spacing
+  legend.key.size = unit(0.4, "cm"),
+  legend.key.height = unit(0.5, "cm"),
+  legend.title.align = 0) +
+  guides(fill = guide_legend(title.position = "top", title.hjust = 0.5)) +
+  scale_fill_manual(values = season_colors) 
+print(scatter_plot)
+dev.off()
+```
+
+
+
+```{r}
+Nostocales <- css_combined_data %>%
+  filter(Order == "Nostocales") %>%
+  group_by(Sample, Season) %>%
+  summarise(NormalizedAbundance = sum(NormalizedAbundance)) %>%
+  ungroup() %>%
+  mutate(Taxon = "Nostocales")
+
+Cytophagales <- css_combined_data %>%
+  filter(Order == "Cytophagales") %>%
+  group_by(Sample, Season) %>%
+  summarise(NormalizedAbundance = sum(NormalizedAbundance)) %>%
+  ungroup() %>%
+  mutate(Taxon = "Cytophagales")
+
+Trentepohliales <- css_combined_data %>%
+  filter(Order == "Trentepohliales") %>%
+  group_by(Sample, Season) %>%
+  summarise(NormalizedAbundance = sum(NormalizedAbundance)) %>%
+  ungroup() %>%
+  mutate(Taxon = "Trentepohliales")
+
+combined_taxa_data <- bind_rows(Nostocales, Cytophagales, Trentepohliales)
+
+combined_taxa <- bind_rows(
+  Nostocales %>% mutate(Taxon = "Nostocales"),
+  Cytophagales %>% mutate(Taxon = "Cytophagales"),
+  Trentepohliales %>% mutate(Taxon = "Trentepohliales")
+)
+
+combined_taxa <- combined_taxa %>%
+  mutate(Log_Abundance = log10(NormalizedAbundance + 1))
+
+pivot_data_all <- combined_taxa %>%
+  select(Sample, Taxon, Log_Abundance) %>%
+  pivot_wider(names_from = Taxon, values_from = Log_Abundance, names_prefix = "Log_")
+
+pivot_data_all <- pivot_data_all %>%
+  left_join(combined_data %>% select(Sample, Season) %>% distinct(), by = "Sample")
+
+pivot_data_all <- pivot_data_all %>%
+  filter(Log_Nostocales > 0 & Log_Cytophagales > 0 & Log_Trentepohliales > 0)
+
+colnames(pivot_data_all) <- gsub("^Log_", "", colnames(pivot_data_all))
+
+correlations_overall <- pivot_data_all %>%
+  summarise(
+    Nostocales_Cytophagales = cor(Nostocales, Cytophagales, method = "pearson"),
+    Nostocales_Trentepohliales = cor(Nostocales, Trentepohliales, method = "pearson"),
+    Cytophagales_Trentepohliales = cor(Cytophagales, Trentepohliales, method = "pearson")
+  )
+
+rsquared_overall <- correlations_overall^2
+
+correlations_by_season <- pivot_data_all %>%
+  group_by(Season) %>%
+  summarise(
+    Nostocales_Cytophagales = cor(Nostocales, Cytophagales, method = "pearson"),
+    Nostocales_Trentepohliales = cor(Nostocales, Trentepohliales, method = "pearson"),
+    Cytophagales_Trentepohliales = cor(Cytophagales, Trentepohliales, method = "pearson")
+  )
+
+rsquared_by_season <- correlations_by_season %>%
+  mutate(across(where(is.numeric), ~ .^2))
+
+lm_by_season <- pivot_data_all %>%
+  group_by(Season) %>%
+  summarise(
+    lm_Nostocales_Cytophagales = summary(lm(Nostocales ~ Cytophagales))$r.squared,
+    lm_Nostocales_Trentepohliales = summary(lm(Nostocales ~ Trentepohliales))$r.squared,
+    lm_Cytophagales_Trentepohliales = summary(lm(Cytophagales ~ Trentepohliales))$r.squared
+  )
+
+r_squared_all <- bind_rows(
+  rsquared_overall %>% mutate(Season = "Overall"),
+  rsquared_by_season
+)
+
+final_r_squared_values <- r_squared_all %>%
+  left_join(lm_by_season, by = "Season")
+
+
+pdf("Nostocales_Cytophagales_Trentepohliales.pdf", width=8, height=8)
+pairwise_plot_all <- ggpairs(
+  pivot_data_all,
+  columns = c("Nostocales", "Cytophagales", "Trentepohliales"),
+  mapping = aes(color = Season),
+  lower = list(continuous = function(data, mapping, ...) {
+    ggplot(data = data, mapping = mapping) +
+      geom_point(size = 2, alpha = 0.8, aes(color = Season)) +
+      geom_smooth(method = "lm", se = FALSE, size = 0.75, aes(color = Season)) +
+      stat_cor(method = "pearson", label.x = 3, label.y = 10) +
+      scale_y_log10(expand = c(0, 0.3),
+                limits = c(0.001, 10),
+                breaks = c(0.001, 0.01, 0.1, 1, 10),
+                labels = label_log10_direct(c(0.001, 0.01, 0.1, 1, 10))) +
+      scale_x_log10(expand = c(0, 0.3),
+                limits = c(0.001, 10),
+                breaks = c(0.001, 0.01, 0.1, 1, 10),
+                labels = label_log10_direct(c(0.001, 0.01, 0.1, 1, 10))) 
+  }),
+  diag = list(continuous = "blankDiag")
+) +
+  theme_pubr() +
+  scale_color_manual(values = season_colors) +
+  scale_fill_manual(values = season_colors) +
+  ggtitle("Pairwise Relationships of Log-Transformed Normalized Abundances") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+    legend.position = "bottom",
+    strip.text = element_text(size = 14)
+  )
+
+print(pairwise_plot_all)
+dev.off()
+
+
+
+```
+
+
+```{r}
+pdf("Nostocales_Cytophagales_Trentepohliales.pdf", width=8, height=8)
+
+pairwise_plot_all <- ggpairs(
+  pivot_data_all,
+  columns = c("Nostocales", "Cytophagales", "Trentepohliales"),
+  mapping = aes(color = Season),
+  lower = list(continuous = function(data, mapping, ...) {
+    ggplot(data = data, mapping = mapping) +
+      geom_point(size = 2, alpha = 0.8, aes(color = Season)) +
+      geom_smooth(method = "lm", se = FALSE, size = 0.75, aes(color = Season)) +
+      stat_cor(method = "pearson", label.x = 3, label.y = 10) +
+      scale_y_log10(expand = c(0, 0.3),
+                limits = c(0.001, 10),
+                breaks = c(0.001, 0.01, 0.1, 1, 10),
+                labels = label_log10_direct(c(0.001, 0.01, 0.1, 1, 10))) +
+      scale_x_log10(expand = c(0, 0.3),
+                limits = c(0.001, 10),
+                breaks = c(0.001, 0.01, 0.1, 1, 10),
+                labels = label_log10_direct(c(0.001, 0.01, 0.1, 1, 10)))
+  }),
+  upper = list(continuous = function(data, mapping, ...) {
+    x_var <- as_label(mapping$x)
+    y_var <- as_label(mapping$y)
+    
+    combined_lm <- lm(reformulate(x_var, y_var), data = data)
+    dry_lm <- lm(reformulate(x_var, y_var), data = subset(data, Season == "Dry"))
+    wet_lm <- lm(reformulate(x_var, y_var), data = subset(data, Season == "Wet"))
+    
+    combined_r2 <- summary(combined_lm)$r.squared
+    dry_r2 <- summary(dry_lm)$r.squared
+    wet_r2 <- summary(wet_lm)$r.squared
+    
+    ggplot(data = data, mapping = mapping) +
+      geom_blank() + 
+      annotate("text", x = 0.5, y = 0.5, label = sprintf("R^2 (Combined): %.3f", combined_r2)) +
+      annotate("text", x = 0.5, y = 0.3, label = sprintf("R^2 (Dry): %.3f", dry_r2)) +
+      annotate("text", x = 0.5, y = 0.1, label = sprintf("R^2 (Wet): %.3f", wet_r2)) +
+      theme_void()
+  }),
+  diag = list(continuous = "blankDiag")
+) +
+  theme_pubr() +
+  scale_color_manual(values = season_colors) +
+  scale_fill_manual(values = season_colors) +
+  ggtitle("Pairwise Relationships of Log-Transformed Normalized Abundances") +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+    legend.position = "bottom",
+    strip.text = element_text(size = 14)
+  )
+
+print(pairwise_plot_all)
+dev.off()
+
+
+```
+
+
+
+
+
+```{r}
+Trentepohliales <- filtered_combined_data %>%
+  filter(Order == "Trentepohliales") %>%
+  group_by(Sample, Season) %>%
+  summarise(NormalizedAbundance = sum(NormalizedAbundance)) %>%
+  ungroup()
+
+Lecanorales <- filtered_combined_data %>%
+  filter(Order == "Lecanorales") %>%
+  group_by(Sample, Season) %>%
+  summarise(NormalizedAbundance = sum(NormalizedAbundance)) %>%
+  ungroup()
+
+combined_taxa <- bind_rows(
+  Trentepohliales %>% mutate(Taxon = "Trentepohliales"),
+  Lecanorales %>% mutate(Taxon = "Lecanorales")
+)
+
+combined_taxa <- combined_taxa %>%
+  mutate(Log_Abundance = log10(NormalizedAbundance + 1))
+
+pivot_data <- combined_taxa %>%
+  select(Sample, Taxon, Log_Abundance) %>%
+  pivot_wider(names_from = Taxon, values_from = Log_Abundance, names_prefix = "Log_")
+
+pivot_data <- pivot_data %>%
+  left_join(combined_data %>% select(Sample, Season) %>% distinct(), by = "Sample")
+
+pivot_data <- pivot_data %>%
+  filter(Log_Trentepohliales > 0 & Log_Lecanorales > 0)
+
+model <- lm(Log_Lecanorales ~ Log_Trentepohliales, data = pivot_data)
+
+r_squared <- summary(model)$r.squared
+
+season_colors <- c("Dry" = "#FF0000", "Wet" = "#0000FF")
+color_mapping <- season_colors[pivot_data$Season]
+
+label_log10_direct <- function(x) {
+  parse(text = paste0("10^", x))
+}
+```
+
+```{r}
+model_season_interaction <- lm(Log_Lecanorales ~ Log_Trentepohliales * Season, data = pivot_data)
+
+r_squared_season <- summary(model_season_interaction)$r.squared
+
+pdf("Lecanorales_Trentepohliales.pdf", width=4, height=4.5)
+scatter_plot_season <- ggplot(pivot_data, aes(x = Log_Trentepohliales, y = Log_Lecanorales)) +
+  geom_point(aes(fill = Season), color = "black", shape = 22, size = 3, stroke = 0.5) +
+  geom_smooth(method = "lm", aes(color = Season), se = FALSE, formula = y ~ x, show.legend = FALSE) + 
+  annotate("text", x = max(pivot_data$Log_Trentepohliales, na.rm = TRUE) * 0.80,
+           y = max(pivot_data$Log_Lecanorales, na.rm = TRUE) * 0.4,
+           label = bquote(R^2 == .(round(r_squared_season, 2))), size = 5,
+           hjust = 0.1, vjust = 2) +
+  scale_y_log10(expand = c(0, 0),
+                limits = c(0.001, 12),
+                breaks = c(0.001, 0.01, 0.1, 1, 10),
+                labels = label_log10_direct(c(0.001, 0.01, 0.1, 1, 10))) +
+  scale_x_log10(expand = c(0, 0),
+                limits = c(0.001, 12),
+                breaks = c(0.001, 0.01, 0.1, 1, 10),
+                labels = label_log10_direct(c(0.001, 0.01, 0.1, 1, 10))) +
+  theme_pubr() + 
+  labs(
+    y = expression("Log"[10] * " Normalized Abundance of Lecanorales Reads"),
+    x = expression("Log"[10] * " Normalized Abundance of Trentepohliales Reads"),
+    fill = "Season",
+    color = "Season"
+  ) + 
+  theme(axis.text = element_text(size = 10),
+        axis.title = element_text(size = 9),
+        axis.text.x = element_text(angle = 0, hjust = 0.5), 
+        plot.title = element_text(hjust = 0.5),
+        legend.position = c(0.01, 1),
+        legend.box = "vertical",
+        legend.justification = c("left", "top"),
+        legend.box.just = "left",
+        legend.text = element_text(size = 12, margin = margin(l = 1)),
+        legend.title = element_text(size = 14, hjust = 0.5, vjust = -1.5),
+        legend.spacing.x = unit(0, 'cm'),
+        legend.margin = margin(t = 0, r = 0, b = 0, l = 0)) +
+  guides(fill = guide_legend(title.position = "top", title.hjust = 0.5)) +
+  scale_fill_manual(values = season_colors) +
+  scale_color_manual(values = season_colors)
+
+print(scatter_plot_season)
+dev.off()
+```
+
+
+
+
+
+```{r}
+Nostocales <- filtered_combined_data %>%
+  filter(Order == "Nostocales") %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  group_by(Sample, Season) %>%
+  summarise(CLR_CZM = sum(CLR_CZM), .groups = "drop") %>%
+  mutate(
+    Season = as.factor(Season),
+    CLR_CZM = (CLR_CZM - min(CLR_CZM)) / (max(CLR_CZM) - min(CLR_CZM)),
+    Marker = "Nostocales"
+  )
+
+Cytophagales <- filtered_combined_data %>%
+  filter(Order == "Cytophagales") %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  group_by(Sample, Season) %>%
+  summarise(CLR_CZM = sum(CLR_CZM), .groups = "drop") %>%
+  mutate(
+    Season = as.factor(Season),
+    CLR_CZM = (CLR_CZM - min(CLR_CZM)) / (max(CLR_CZM) - min(CLR_CZM)),
+    Marker = "Cytophagales"
+  )
+
+Chlorophyta <- bind_rows(Nostocales, Cytophagales)
+
+pivot_data_Chlorophyta <- Chlorophyta %>%
+  select(Sample, Marker, CLR_CZM) %>%
+  pivot_wider(names_from = Marker, values_from = CLR_CZM, names_prefix = "CLR_")
+
+pivot_data_Chlorophyta <- pivot_data_Chlorophyta %>%
+  left_join(combined_data %>% select(Sample, Season) %>% distinct(), by = "Sample")
+
+model <- lm(CLR_Nostocales ~ CLR_Cytophagales, data = pivot_data_Chlorophyta)
+r_squared <- summary(model)$r.squared
+
+season_colors <- c("Dry" = "#FF0000", "Wet" = "#0000FF")
+color_mapping <- season_colors[pivot_data_Chlorophyta$Season]
+
+pdf("Nostocales_Cytophagales.pdf", width=4, height=4.5)
+scatter_plot <- ggplot(pivot_data_Chlorophyta, aes(x = CLR_Cytophagales, y = CLR_Nostocales)) +
+  geom_point(aes(fill = Season), color = "black", shape = 22, size = 3, stroke = 0.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "black") +
+  annotate("text", x = max(pivot_data_Chlorophyta$CLR_Cytophagales, na.rm = TRUE),
+           y = min(pivot_data_Chlorophyta$CLR_Nostocales, na.rm = TRUE),
+           label = bquote(R^2 == .(round(r_squared, 2))), size = 5,
+           hjust = 1, vjust = -3) +
+   scale_x_continuous(expand = c(0, 0), 
+                   limits = c(-0.25, 1.3),
+                   breaks = seq(-0.25, 1.25, by = 0.5)) +
+  scale_y_continuous(expand = c(0, 0), 
+                   limits = c(-0.25, 1.3),
+                   breaks = seq(-0.25, 1.25, by = 0.5)) +
+  theme_pubr() + 
+  labs(
+    y = "Nostocales Reads − Scaled CLR-CZM (16S)",
+    x = "Cytophagales Reads − Scaled CLR-CZM (16S)",
+    fill = "Season") + 
+ theme(
+  axis.text = element_text(size = 10),
+  axis.title = element_text(size = 10),
+  axis.text.x = element_text(angle = 0, hjust = 0.5),
+  plot.title = element_text(hjust = 0.5, margin = margin(b = 10)),  # Reduced bottom margin
+  legend.position = c(0.01, 0.99),
+  legend.justification = c("left", "top"),
+  legend.box.just = "left",
+  legend.text = element_text(size = 12),
+  legend.title = element_text(size = 14, vjust = -0.8),
+  legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+  legend.spacing.x = unit(0.1, "cm"),  # Reduced horizontal spacing
+  legend.spacing.y = unit(0.1, "cm"),  # Reduced vertical spacing
+  legend.key.size = unit(0.4, "cm"),
+  legend.key.height = unit(0.5, "cm"),
+  legend.title.align = 0) +
+  guides(fill = guide_legend(title.position = "top", title.hjust = 0.5)) +
+  scale_fill_manual(values = season_colors) 
+print(scatter_plot)
+dev.off()
+```
+
+
+

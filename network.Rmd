@@ -1,0 +1,347 @@
+---
+title: "network analysis"
+author: "Breno"
+date: "2024-09-17"
+output: html_document
+---
+```{r}
+# Load required libraries
+library(reshape2)
+library(knitr)
+library(GGally)
+library(network)
+library(sna)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(gridExtra)
+library(stringr)
+library(ggpubr)
+library(tibble)
+library(ggnetwork)
+library(grid)
+library(ggrepel)
+```
+
+```{r}
+taxon_filtering_normal <- function(ps_tbl, abundance_threshold = 2, presence_threshold = 0.2, retain_taxa = NULL, season_filter = NULL) {
+  if (!is.null(retain_taxa)) {
+    existing_Orders <- unique(ps_tbl$Order)
+    valid_retain_taxa <- retain_taxa[retain_taxa %in% existing_Orders]
+    
+    if (length(valid_retain_taxa) < length(retain_taxa)) {
+      warning("Some specified taxa not found at Order level in the dataset")
+    }
+  }
+  
+  if (!is.null(season_filter)) {
+    ps_tbl <- ps_tbl %>% filter(Season == season_filter)
+  }
+  
+  Orderes <- ps_tbl %>% 
+    group_by(Sample, Order, Season) %>% 
+    filter(CSSAbundance != 0) %>% 
+    summarise(CSSAbundance = sum(CSSAbundance), .groups = 'drop')
+  
+  total_abundance <- ps_tbl %>%
+    group_by(Sample) %>%
+    summarise(Total_Abundance = sum(CSSAbundance), .groups = 'drop')
+  
+  Orderes <- Orderes %>%
+    left_join(total_abundance, by = "Sample") %>%
+    mutate(RelativeAbundance = (CSSAbundance / Total_Abundance) * 100) %>%
+    ungroup()
+  
+  mean_relative_abundance <- Orderes %>%
+    complete(Order, nesting(Sample), fill = list(RelativeAbundance = 0)) %>%
+    filter(!is.na(Order)) %>%
+    group_by(Order) %>%
+    summarise(
+      MeanAbundance = round(mean(RelativeAbundance, na.rm = TRUE), 2),
+      .groups = 'drop'
+    )
+  
+  sample_counts <- Orderes %>%
+    group_by(Order) %>%
+    summarise(
+      NSamples = n_distinct(Sample),
+      TotalSamples = n_distinct(ps_tbl$Sample),
+      SampleProportion = NSamples / TotalSamples,
+      .groups = 'drop'
+    )
+  
+  combined_stats <- mean_relative_abundance %>%
+    left_join(sample_counts, by = "Order")
+  
+  filtered_Orderes <- combined_stats %>%
+    filter(MeanAbundance >= abundance_threshold & 
+           SampleProportion >= presence_threshold |
+           Order %in% retain_taxa) %>%
+    pull(Order)
+  
+  return(filtered_Orderes)
+}
+```
+
+```{r}
+normal_16s <- filtered_combined_data %>% filter(Marker == "16S")
+normal_18s <- filtered_combined_data %>% filter(Marker == "18S")
+normal_its <- filtered_combined_data %>% filter(Marker == "ITS")
+
+filtered_Orderes_16s_normal <- taxon_filtering_normal(normal_16s, 
+                                                      abundance_threshold = 2.5, 
+                                                      retain_taxa = c("Chloroflexales", "Leptolyngbyales")
+                                                      )
+
+filtered_Orderes_18s_normal <- taxon_filtering_normal(normal_18s,
+                                                      abundance_threshold = 2.5,
+                                                      retain_taxa = c("Charophyta*", "Prasiolales")
+                                                      )
+
+filtered_Orderes_its_normal <- taxon_filtering_normal(normal_its,
+                                                      abundance_threshold = 2.5, 
+                                                      retain_taxa = "Tremellales"
+                                                      )
+
+all_filtered_Orderes_normal <- unique(c(filtered_Orderes_16s_normal,
+                                        filtered_Orderes_18s_normal,
+                                        filtered_Orderes_its_normal))
+
+Order_to_remove <- "Clitellata"  
+all_filtered_Orderes_normal <- setdiff(all_filtered_Orderes_normal, Order_to_remove)
+```
+
+
+
+```{r}
+clr_shift_16s <- abs(min(normal_16s$CLR_CZM, na.rm = TRUE))
+clr_shift_18s <- abs(min(normal_18s$CLR_CZM, na.rm = TRUE))
+clr_shift_its <- abs(min(normal_its$CLR_CZM, na.rm = TRUE))
+
+filtered_data_final <- filtered_combined_data %>%
+ # filter(Season == NULL) %>%
+  mutate(
+    CLR_CZM = case_when(
+      Marker == "16S" ~ CLR_CZM + clr_shift_16s,
+      Marker == "18S" ~ CLR_CZM + clr_shift_18s,
+      Marker == "ITS" ~ CLR_CZM + clr_shift_its,
+      TRUE ~ CLR_CZM
+    )
+  ) %>%
+  filter(Order %in% all_filtered_Orderes_normal) %>%
+  select(Sample, Order, CLR_CZM) %>%
+  group_by(Sample, Order) %>%
+  summarise(Abundance = sum(CLR_CZM[CLR_CZM >= 0], na.rm = TRUE), .groups = 'drop')
+
+filtered_data_final_clr_pivot <- filtered_data_final %>%
+  pivot_wider(names_from = Order, 
+              values_from = Abundance, 
+              values_fill = 0)
+
+filtered_data_final_clr_pivot <-  filtered_data_final_clr_pivot %>%
+    column_to_rownames("Sample")
+
+class_names <- colnames(filtered_data_final_clr_pivot)
+```
+
+```{r}
+categorize_class <- function(class_name) {
+  prokaryotes <- c("Betaproteobacteriales", "Chitinophagales", "Chloroflexales", 
+                   "Cytophagales", "Frankiales", "Gemmatales", "Isosphaerales", 
+                   "Ktedonobacterales", "Leptolyngbyales", "Myxococcales", 
+                   "Nostocales", "Rhizobiales", "Solirubrobacterales", "Sphingomonadales")
+  
+  photosynthetic <- c("Charophyta*", "Chlamydomonadales", "Chloroflexales", 
+                      "Leptolyngbyales", "Nostocales", "Sphaeropleales", 
+                      "Trebouxiales", "TIS Fam. Coccomyxaceae", "Trentepohliales")
+  
+  list(
+    domain = if(class_name %in% prokaryotes) "Prokaryote" else "Eukaryote",
+    photosynthetic = class_name %in% photosynthetic
+  )
+}
+
+# Create a data frame for node attributes
+node_attr <- data.frame(
+  class = class_names,
+  stringsAsFactors = FALSE
+) %>%
+  rowwise() %>%
+  mutate(
+    category = list(categorize_class(class)),
+    domain = category$domain,
+    photosynthetic = category$photosynthetic
+  ) %>%
+  ungroup() %>%
+  mutate(
+    shape = case_when(
+      domain == "Prokaryote" ~ 19,  # solid circle
+      domain == "Eukaryote" ~ 15,   # solid square
+      TRUE ~ 17                     # triangle for unknown (shouldn't occur)
+    ),
+    color = case_when(
+      domain == "Prokaryote" & photosynthetic ~ "green",
+      domain == "Eukaryote" & photosynthetic ~ "green",
+      domain == "Prokaryote" & !photosynthetic ~ "purple",
+      domain == "Eukaryote" & !photosynthetic ~ "red",
+      TRUE ~ "black"
+    )
+  )
+
+# Calculate correlation matrix between classes
+cor_matrix <- cor(filtered_data_final_clr_pivot, method = "spearman")
+
+# Set diagonal to 0 to avoid self-loops
+diag(cor_matrix) <- 0
+```
+
+```{r}
+generate_all_plots <- function(cor_matrix, node_attr, class_names) {
+  thresholds <- seq(0.2, 0.8, by = 0.1)
+  
+  for (threshold in thresholds) {
+    try({
+      edge_list <- which(cor_matrix >= threshold, arr.ind = TRUE)
+      
+      if (nrow(edge_list) > 0) {
+        edge_weights <- cor_matrix[edge_list]
+        net <- network(edge_list, directed = FALSE, matrix.type = "edgelist", 
+                      ignore.eval = FALSE, names.eval = "weight")
+        
+        set.edge.attribute(net, "weight", edge_weights)
+        node_degrees <- degree(net)
+        connected_nodes <- which(node_degrees > 0)
+        net <- delete.vertices(net, which(node_degrees == 0))
+        
+        network::set.vertex.attribute(net, "class", class_names[connected_nodes])
+        network::set.vertex.attribute(net, "color", node_attr$color[connected_nodes])
+        network::set.vertex.attribute(net, "shape", node_attr$shape[connected_nodes])
+        network::set.vertex.attribute(net, "size", node_degrees[connected_nodes])
+        
+        net_gg <- ggnetwork(net, layout = "fruchtermanreingold", 
+                           niter = 2000, 
+                           cell.jitter = 1)
+        
+        unique_nodes <- net_gg[!duplicated(net_gg$vertex.names), ]
+        
+        main_plot <- ggplot(net_gg, aes(x = x, y = y, xend = xend, yend = yend)) +
+          geom_edges(aes(linewidth = weight, alpha = weight), color = "black") +
+          geom_nodes(aes(size = size, shape = shape), color = "black", fill = NA, stroke = 1.5) +
+          geom_nodes(aes(size = size, shape = shape, color = color), alpha = 0.8) +
+          geom_text_repel(
+            data = unique_nodes,
+            aes(label = vertex.names),
+            size = 7,
+            force = 5,
+            force_pull = 20,
+            point.padding = 0.1,
+            segment.alpha = 1,
+            min.segment.length = 0,
+            max.overlaps = Inf,
+            segment.size = 0.7,       
+            segment.color = "black",
+            box.padding = 2,
+            max.iter = 10000,     
+            max.time = 1,         
+            hjust = 0.5,
+            vjust = 0,
+            direction = "both",
+            nudge_x = 0.05,
+            nudge_y = 0.05,
+            seed = 42
+          ) +
+          scale_color_identity() +
+          scale_shape_identity() +
+          scale_size_continuous(range = c(3, 12)) +
+          scale_linewidth_continuous(range = c(1, 3)) +
+          theme_pubr() +
+          theme(
+            legend.position = "none",
+            axis.title = element_blank(),
+            axis.text = element_blank(),
+            axis.ticks = element_blank(),
+            panel.grid = element_blank(),
+            plot.margin = margin(20, 20, 20, 20),
+            panel.background = element_blank(),
+            axis.line = element_blank(),
+            plot.background = element_rect(fill = "white"),
+            panel.border = element_blank()
+          ) +
+         coord_fixed(xlim = c(min(net_gg$x) - 0.3, max(net_gg$x) + 0.3),
+           ylim = c(min(net_gg$y) - 0.3, max(net_gg$y) + 0.3))
+        
+        width <- height <- if(threshold == 0.5) 16 else 13
+        threshold_digit <- as.character(round(threshold * 10))
+        file_name <- paste0(threshold_digit, "classname_ggplot2_network_graph_with_legend_inside.pdf")
+        ggsave(file_name, main_plot, width = width, height = height, dpi = 300)
+      }
+    }, silent = FALSE)
+  }
+}
+
+# Call the function with the existing correlation matrix
+generate_all_plots(cor_matrix, node_attr, class_names)
+
+```
+
+```{r}
+generate_legend_pdf <- function(class_names, file_name = "network_legend.pdf") {
+  # Create a data frame with vertex numbers and class names
+  legend_data <- data.frame(
+    vertex = seq_along(class_names),
+    class = class_names
+  )
+  
+  # Function to create a text grob for each legend entry
+  create_legend_entry <- function(vertex, class) {
+    grobTree(
+      textGrob(paste0(vertex, " - ", class), 
+               x = 0.05, y = 0.5, just = "left", 
+               gp = gpar(fontsize = 10))
+    )
+  }
+  
+  # Create a list of legend entry grobs
+  legend_grobs <- mapply(create_legend_entry, 
+                         legend_data$vertex, 
+                         legend_data$class, 
+                         SIMPLIFY = FALSE)
+  
+  # Calculate the number of pages needed (assuming 40 entries per page)
+  entries_per_page <- 40
+  num_pages <- ceiling(length(class_names) / entries_per_page)
+  
+  # Create the PDF
+  pdf(file_name, width = 8.5, height = 11)  # Standard letter size
+  
+  for (page in 1:num_pages) {
+    # Calculate start and end indices for this page
+    start_idx <- (page - 1) * entries_per_page + 1
+    end_idx <- min(page * entries_per_page, length(class_names))
+    
+    # Create a grid for this page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(entries_per_page, 1)))
+    
+    # Add legend entries for this page
+    for (i in start_idx:end_idx) {
+      pushViewport(viewport(layout.pos.row = i - start_idx + 1, layout.pos.col = 1))
+      grid.draw(legend_grobs[[i]])
+      popViewport()
+    }
+    
+    # Add page number
+    grid.text(paste("Page", page, "of", num_pages), 
+              x = 0.95, y = 0.02, just = c("right", "bottom"))
+  }
+  
+  dev.off()
+  
+  cat("Legend PDF created:", file_name, "\n")
+}
+
+
+# Usage:
+generate_legend_pdf(class_names, "my_network_legend.pdf")
+```
+

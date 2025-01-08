@@ -1,0 +1,221 @@
+---
+title: "Stacked Bardplot for the plotting of relative abundance per Sample per marker"
+output: html_notebook
+---
+```{r}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+library(scales)
+library(paletteer)
+library(ggh4x)
+library(tidyr)
+```
+
+```{r}
+s_grouped_Class <- filtered_combined_data %>% 
+ group_by(Sample, Class, Season, Marker) %>%  
+ filter(CSSAbundance != 0) %>% 
+ summarise(CSSAbundance = sum(CSSAbundance), .groups = 'drop')
+
+total_CSSAbundance <- filtered_combined_data %>%
+ group_by(Sample, Marker) %>%
+ summarise(Total_CSSAbundance = sum(CSSAbundance), .groups = 'drop')
+
+s_grouped_Class <- s_grouped_Class %>%
+ left_join(total_CSSAbundance, by = c("Sample", "Marker")) %>%
+ mutate(RelativeCSSAbundance = (CSSAbundance / Total_CSSAbundance) * 100) %>%
+ ungroup()
+
+class_totals <- s_grouped_Class %>%
+ group_by(Marker, Class) %>%
+ summarise(TotalRelativeAbundance = sum(RelativeCSSAbundance)) %>%
+ arrange(Marker, desc(TotalRelativeAbundance))
+
+ITS_Class_totals <- s_grouped_Class %>%
+ filter(Marker == "ITS") %>%
+ group_by(Class) %>%
+ summarise(TotalRelativeAbundance = sum(RelativeCSSAbundance)) %>%
+ arrange(desc(TotalRelativeAbundance))
+
+S16_Class_totals <- s_grouped_Class %>%
+ filter(Marker == "16S") %>%
+ group_by(Class) %>%
+ summarise(TotalRelativeAbundance = sum(RelativeCSSAbundance)) %>%
+ arrange(desc(TotalRelativeAbundance))
+
+S18_Class_totals <- s_grouped_Class %>%
+ filter(Marker == "18S") %>%
+ group_by(Class) %>%
+ summarise(TotalRelativeAbundance = sum(RelativeCSSAbundance)) %>%
+ arrange(desc(TotalRelativeAbundance))
+
+```
+
+```{r}
+top_taxa <- list(
+ "ITS" = 10,  # adjust after investigation
+ "16S" = 20,  # adjust after investigation
+ "18S" = 20   # adjust after investigation
+)
+
+# Then run the condensing step
+s_grouped_Class_condensed <- s_grouped_Class %>%
+ group_by(Marker) %>%
+ mutate(Class = case_when(
+   is.na(Class) ~ "Others/NA",
+   !(Class %in% (class_totals %>% 
+                 filter(Marker == cur_group()$Marker[1],
+                       !is.na(Class)) %>% 
+                 slice_head(n = top_taxa[[cur_group()$Marker[1]]]) %>% 
+                 pull(Class))) ~ "Others/NA",
+   TRUE ~ as.character(Class)
+ )) %>%
+ group_by(Sample, Season, Marker, Class) %>%
+ summarise(RelativeCSSAbundance = sum(RelativeCSSAbundance, na.rm = TRUE)) %>%
+ ungroup()
+```
+
+
+```{r}
+facet_colors <- c("Dry" = "#FFCCCC", "Wet" = "lightblue")
+
+generate_marker_colors <- function(data, marker) {
+  marker_data <- data %>% 
+    filter(Marker == marker)
+  
+  class_order <- marker_data %>%
+    group_by(Class) %>%
+    summarise(MeanAbundance = mean(RelativeCSSAbundance)) %>%
+    arrange(desc(MeanAbundance)) %>%
+    filter(Class != "Others/NA") %>%
+    pull(Class)
+  
+  # Define preferred colors
+    preferred_colors <- c(
+    "#FFFF80", "#000080", "#800000", "#00FF80",
+    "#FF8000", "#0080FF", "#FFFF00", "#8000FF",
+    "#80FF00", "#808000", "#008080", "#B78900", 
+    "#66A61E", "#FF8080", "#80FFFF", "#CDB380",
+    "#0000FF", "#00FF00", "#FF80FF", "#FF0000"
+    )
+    
+    # Complete palette36
+    palette36 <- c(
+     "#FF0000", "#00FF00", "#0000FF", "#FF00FF", "#00FFFF", "#FFFF00",
+     "#800000", "#008000", "#000080", "#800080", "#008080", "#808000",
+     "#FF8080", "#80FF80", "#8080FF", "#FF80FF", "#80FFFF", "#FFFF80",
+     "#FF0080", "#80FF00", "#0080FF", "#8000FF", "#00FF80", "#FF8000",
+     "#800080", "#008080", "#808000", "#FF8080", "#80FF80", "#8080FF",
+     "#FF80FF", "#80FFFF", "#FFFF80", "#FF0080", "#80FF00", "#0080FF",
+     "#B78900", "#66A61E", "#8B97B1", "#7A65A5", 
+     "#7F9AA5", "#92C5DE", "#95A78D", "#CDB380",
+     "#A2BBB3", "#A8DDB5", "#B3B3B3", "#8E8E8E",
+     "#99C7C7", "#B2ABD2", "#8AA0C9", "#9F86AA",
+     "#A0B2C9", "#95B1C9", "#90A4BD"
+    )
+
+print(palette36)
+  
+  # Create color vector
+  n_classes <- length(class_order)
+  class_colors <- preferred_colors[1:n_classes]
+  names(class_colors) <- class_order
+  
+  # Print debug info
+  cat("\nMarker:", marker, "\n")
+  cat("Classes in order of abundance:\n")
+  print(data.frame(
+    Class = names(class_colors),
+    Color = class_colors,
+    row.names = NULL
+  ))
+  
+  c(class_colors, c("Others/NA" = "#F7E1A0"))
+}
+
+s_grouped_Class_condensed <- s_grouped_Class_condensed %>%
+  mutate(Class = ifelse(is.na(Class) | Class == "NA", "Others/NA", as.character(Class)))
+
+ITS_colors <- generate_marker_colors(s_grouped_Class_condensed, "ITS")
+S16_colors <- generate_marker_colors(s_grouped_Class_condensed, "16S")
+S18_colors <- generate_marker_colors(s_grouped_Class_condensed, "18S")
+```
+
+
+```{r}
+plot_relative_CSSAbundance <- function(marker_name, data, facet_colors) {
+  marker_colors <- switch(marker_name,
+                         "ITS" = ITS_colors,
+                         "16S" = S16_colors,
+                         "18S" = S18_colors)
+  
+  class_order <- data %>%
+    filter(Marker == marker_name) %>%
+    group_by(Class) %>%
+    summarise(MeanAbundance = mean(RelativeCSSAbundance)) %>%
+    arrange(Class == "Others/NA", desc(MeanAbundance)) %>%  
+    pull(Class)
+  
+  plot_data <- data %>%
+    filter(Marker == marker_name) %>%
+    mutate(Class = factor(Class, levels = class_order))
+  
+  p <- plot_data %>%
+    ggplot(aes(x = Sample, y = RelativeCSSAbundance, fill = Class)) +
+    geom_bar(stat = "identity", position = "stack", colour = "black") +
+    facet_wrap2(~Season, scales = "free_x", strip = strip_themed(
+      background_x = elem_list_rect(fill = facet_colors[levels(plot_data$Season)])
+    )) +
+    scale_fill_manual(values = marker_colors, breaks = class_order) +
+    scale_y_continuous(
+      limits = c(0, 100.1),
+      breaks = seq(0, 100, by = 20),
+      expand = c(0, 0)) + 
+    theme_pubr(legend = "right") +
+    ggtitle(paste(marker_name, "- CSS Relative Abundance by Class")) + 
+    labs(x = "Sample", y = "CSS Relative Abundance (%)", fill = "Class") +
+    theme(axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 20),
+          legend.title = element_text(size = 18, hjust = 0.5),
+          legend.text = element_text(size = 13),
+          legend.direction = "vertical",
+          axis.text.x = element_text(angle = 67.5, hjust = 1),
+          legend.box.just = "right",
+          strip.text.x = element_text(size = 16, color = "black", face = "bold"),
+          plot.title = element_text(hjust = 0.5, size = 20, face = "bold"),
+          plot.margin = margin(5.5, 20, 5.5, 5.5)  # Adjust right margin
+    ) + 
+    guides(fill = guide_legend(ncol = 1)) 
+  
+  return(p)
+}
+
+# Modified file generation chunk with dynamic widths
+plot_and_save <- function(marker_name, data, facet_colors, base_width = 10, base_height = 9) {
+  p <- plot_relative_CSSAbundance(marker_name, data, facet_colors)
+  
+  # Calculate needed width based on number of legend items
+  n_legend_items <- length(unique(data$Class[data$Marker == marker_name]))
+  
+  # Adjust width based on marker (16S typically needs more space)
+  extra_width <- if(marker_name == "16S") {
+    max(0, (n_legend_items - 15) * 0.2)  # Add 0.2 inches for each item over 15
+  } else {
+    0
+  }
+  
+  final_width <- base_width + extra_width
+  
+  pdf(paste0(marker_name, "_Class_relCSSAbundance.pdf"), 
+      width = final_width, height = base_height)
+  print(p)
+  dev.off()
+}
+
+# Generate files with dynamic sizing
+plot_and_save("16S", s_grouped_Class_condensed, facet_colors)
+plot_and_save("18S", s_grouped_Class_condensed, facet_colors)
+plot_and_save("ITS", s_grouped_Class_condensed, facet_colors)
+```
+

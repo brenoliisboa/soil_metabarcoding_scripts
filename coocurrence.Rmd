@@ -1,0 +1,274 @@
+---
+title: "coocurrence analysis raw data"
+author: "Breno"
+date: "2024-09-13"
+output: html_document
+---
+```{r, message=FALSE}
+library(reshape2)
+library(corrplot)
+library(ggplot2)
+library(gplots)
+library(tibble)
+library(microbiome)
+library(phyloseq)
+library(dplyr)
+library(tidyr)
+```
+
+```{r}
+  breaksList <- seq(-1, 1, length.out = 100)
+  clrsp <- colorRampPalette(c("blue", "white", "#990000"))(200)
+```
+
+
+```{r}
+taxon_filtering_normal <- function(ps_tbl, abundance_threshold = 2, presence_threshold = 0.2, retain_taxa = NULL, season_filter = NULL) {
+  if (!is.null(retain_taxa)) {
+    existing_Orders <- unique(ps_tbl$Order)
+    valid_retain_taxa <- retain_taxa[retain_taxa %in% existing_Orders]
+    
+    if (length(valid_retain_taxa) < length(retain_taxa)) {
+      warning("Some specified taxa not found at Order level in the dataset")
+    }
+  }
+  
+  if (!is.null(season_filter)) {
+    ps_tbl <- ps_tbl %>% filter(Season == season_filter)
+  }
+  
+  Orderes <- ps_tbl %>% 
+    group_by(Sample, Order, Season) %>% 
+    filter(CSSAbundance != 0) %>% 
+    summarise(CSSAbundance = sum(CSSAbundance), .groups = 'drop')
+  
+  total_abundance <- ps_tbl %>%
+    group_by(Sample) %>%
+    summarise(Total_Abundance = sum(CSSAbundance), .groups = 'drop')
+  
+  Orderes <- Orderes %>%
+    left_join(total_abundance, by = "Sample") %>%
+    mutate(RelativeAbundance = (CSSAbundance / Total_Abundance) * 100) %>%
+    ungroup()
+  
+  mean_relative_abundance <- Orderes %>%
+    complete(Order, nesting(Sample), fill = list(RelativeAbundance = 0)) %>%
+    filter(!is.na(Order)) %>%
+    group_by(Order) %>%
+    summarise(
+      MeanAbundance = round(mean(RelativeAbundance, na.rm = TRUE), 2),
+      .groups = 'drop'
+    )
+  
+  sample_counts <- Orderes %>%
+    group_by(Order) %>%
+    summarise(
+      NSamples = n_distinct(Sample),
+      TotalSamples = n_distinct(ps_tbl$Sample),
+      SampleProportion = NSamples / TotalSamples,
+      .groups = 'drop'
+    )
+  
+  combined_stats <- mean_relative_abundance %>%
+    left_join(sample_counts, by = "Order")
+  
+  filtered_Orderes <- combined_stats %>%
+    filter(MeanAbundance >= abundance_threshold & 
+           SampleProportion >= presence_threshold |
+           Order %in% retain_taxa) %>%
+    pull(Order)
+  
+  return(filtered_Orderes)
+}
+```
+
+
+```{r}
+normal_16S <- filtered_combined_data %>% filter(Marker == "16S")
+normal_18S <- filtered_combined_data %>% filter(Marker == "18S")
+normal_ITS <- filtered_combined_data %>% filter(Marker == "ITS")
+
+filtered_Orderes_16s_normal <- taxon_filtering_normal(normal_16S, 
+                                                      abundance_threshold = 2.5, 
+                                                      retain_taxa = c("Chloroflexales", "Leptolyngbyales")
+                                                      )
+
+filtered_Orderes_18s_normal <- taxon_filtering_normal(normal_18S,
+                                                      abundance_threshold = 2.5,
+                                                      retain_taxa = c("Charophyta*", "Prasiolales")
+                                                      )
+
+filtered_Orderes_its_normal <- taxon_filtering_normal(normal_ITS,
+                                                      abundance_threshold = 2.5, 
+                                                      retain_taxa = "Tremellales"
+                                                      )
+
+all_filtered_Orderes_normal <- unique(c(filtered_Orderes_16s_normal,
+                                        filtered_Orderes_18s_normal,
+                                        filtered_Orderes_its_normal))
+
+Order_to_remove <- "Clitellata"  
+all_filtered_Orderes_normal <- setdiff(all_filtered_Orderes_normal, Order_to_remove)
+
+clr_shift_16s <- abs(min(normal_16S$CLR_CZM, na.rm = TRUE))
+clr_shift_18s <- abs(min(normal_18S$CLR_CZM, na.rm = TRUE))
+clr_shift_its <- abs(min(normal_ITS$CLR_CZM, na.rm = TRUE))
+
+filtered_data_final <- filtered_combined_data %>%
+ # filter(Season == NULL) %>%
+  mutate(
+    CLR_CZM = case_when(
+      Marker == "16S" ~ CLR_CZM + clr_shift_16s,
+      Marker == "18S" ~ CLR_CZM + clr_shift_18s,
+      Marker == "ITS" ~ CLR_CZM + clr_shift_its,
+      TRUE ~ CLR_CZM
+    )
+  ) %>%
+  filter(Order %in% all_filtered_Orderes_normal) %>%
+  select(Sample, Order, CLR_CZM) %>%
+  group_by(Sample, Order) %>%
+  summarise(Abundance = sum(CLR_CZM[CLR_CZM >= 0], na.rm = TRUE), .groups = 'drop')
+
+filtered_data_final_clr_pivot <- filtered_data_final %>%
+  pivot_wider(names_from = Order, 
+              values_from = Abundance, 
+              values_fill = 0)
+
+filtered_data_final_clr_matrix <- filtered_data_final_clr_pivot %>%
+  column_to_rownames("Sample") %>%
+  as.matrix()
+
+cor_matrix <- cor(filtered_data_final_clr_matrix, method = "spearman")
+
+p_values <- matrix(0, nrow = ncol(cor_matrix), ncol = ncol(cor_matrix))
+colnames(p_values) <- colnames(filtered_data_final_clr_matrix)
+rownames(p_values) <- colnames(filtered_data_final_clr_matrix)
+
+for (i in 1:(ncol(cor_matrix) - 1)) {
+  for (j in (i + 1):ncol(cor_matrix)) {
+    p_val <- cor.test(filtered_data_final_clr_matrix[, i], 
+                      filtered_data_final_clr_matrix[, j], 
+                      method = "spearman")$p.value
+    p_values[i, j] <- p_val
+    p_values[j, i] <- p_val
+  }
+}
+diag(p_values) <- 0
+
+cooccurrence_matrix <- list(r = cor_matrix, p = p_values)
+```
+
+```{r}
+row_names <- rownames(p_values)
+col_names <- colnames(p_values)
+p_values_vector <- as.vector(p_values)
+p_values_bonferroni <- p.adjust(p_values_vector, method = "bonferroni")
+p_values_by <- p.adjust(p_values_vector, method = "BY")
+p_values_fdr <- p.adjust(p_values_vector, method = "fdr")
+p_values_bonferroni_matrix <- matrix(p_values_bonferroni, nrow = length(row_names), ncol = length(col_names))
+p_values_fdr_matrix <- matrix(p_values_fdr, nrow = length(row_names), ncol = length(col_names))
+p_values_by_matrix <- matrix(p_values_by, nrow = length(row_names), ncol = length(col_names))
+rownames(p_values_bonferroni_matrix) <- row_names
+colnames(p_values_bonferroni_matrix) <- col_names
+rownames(p_values_fdr_matrix) <- row_names
+colnames(p_values_fdr_matrix) <- col_names
+rownames(p_values_by_matrix) <- row_names
+colnames(p_values_by_matrix) <- col_names
+diag(p_values_bonferroni_matrix) <- 1
+diag(p_values_fdr_matrix) <- 1
+diag(p_values_by_matrix) <- 1
+cooccurrence_matrix <- list(r = cor_matrix, p_bon = p_values_bonferroni_matrix, p_fdr = p_values_fdr_matrix, p_by = p_values_by_matrix, p = p_values)
+```
+
+```{r}
+pdf("hclust_clr_heatmap_Order_hclust.pdf", width = 16, height = 15)
+
+# Adjust graphical parameters: use both 'mar' and 'oma' for better control of margins
+par(oma = c(4, 4, 4, 8), mar = c(6, 6, 6, 8), xpd = NA, bg = "transparent")
+
+corrplot(cooccurrence_matrix$r, 
+    method = "color",
+    type = "full",
+    order = "hclust",
+    hclust.method = "ward.D2",
+    p.mat = p_values_fdr_matrix,  
+    sig.level = c(0.005, 0.01, 0.05), 
+    insig = "label_sig",  
+    tl.col = "black",
+    tl.srt = 45,
+    tl.cex = 1.1,
+    addrect = 5,
+    col = clrsp,
+    cl.cex = 1.3,
+    cl.length = 5,
+    cl.ratio = 0.12,
+    pch.cex = 1.5
+)
+
+dev.off()
+```
+
+
+
+
+```{r}
+pdf("hclust_clr_heatmap_Order_fpc.pdf", width = 16, height = 15)
+
+# Adjust graphical parameters: use both 'mar' and 'oma' for better control of margins
+par(oma = c(4, 4, 4, 8), mar = c(6, 6, 6, 8), xpd = NA, bg = "transparent")
+
+# Set diagonal values to zero in the correlation matrix
+diag(cooccurrence_matrix$r) <- 0
+
+# Adjust graphical parameters: use both 'mar' and 'oma' for better control of margins
+par(oma = c(4, 4, 4, 8), mar = c(6, 6, 6, 8), xpd = NA, bg = "transparent")
+
+# Plot the lower triangle with colors and p-values, hide color legend
+corrplot(cooccurrence_matrix$r, 
+         type = "lower",
+         method = "color",
+         order = "FPC",
+         hclust.method = "ward.D2",
+         p.mat = p_values_fdr_matrix,  
+         sig.level = c(0.005, 0.01, 0.05), 
+         insig = "label_sig",
+         diag = TRUE,  # Show diagonal
+         tl.pos = "lt",
+         tl.col = "black",
+         tl.srt = 45,
+         tl.cex = 1.1,  # Increase text size of taxa names
+         addrect = 5,
+         col = clrsp,
+         cl.cex = 1.3,
+         cl.length = 5,
+         cl.ratio = 0.12,
+         pch.cex = 2,
+         cl.pos = "n"  # Hide color legend
+)
+
+# Add the upper triangle with smaller numbers, hide color legend
+corrplot(cooccurrence_matrix$r, 
+         type = "upper",
+         method = "number",
+         order = "FPC",
+         hclust.method = "ward.D2",
+         insig = "n",
+         diag = FALSE, 
+         tl.pos = "n",
+         tl.col = "black",
+         tl.srt = 45,
+         number.cex = 0.85,  # Adjust the size of the numbers
+         add = TRUE,
+         col = clrsp,
+         cl.cex = 0.2,  # Smaller color labels
+         cl.pos = "n"   # Hide color legend
+)
+
+# Add outer margin title to ensure outer space is used
+mtext("Outer Margin Area", side = 1, line = 2, cex = 1.2, col = "blue", outer = TRUE)
+
+dev.off()
+
+
+```
+

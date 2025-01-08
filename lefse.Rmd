@@ -1,0 +1,226 @@
+---
+title: "lefse Notebook"
+output: html_notebook
+---
+```{r}
+library(dplyr)
+library(tidyr)
+library(SummarizedExperiment)
+library(ggplot2)
+library(lefser)
+library(tibble)
+library(ggpubr)
+library(stringr)
+```
+
+
+```{r}
+metadata <- combined_data %>%
+  select(Sample, Season) %>%
+  distinct()
+
+taxon_filtering_normal <- function(ps_tbl){
+  Orderes <- ps_tbl %>%
+    group_by(Sample, Order, Season) %>% 
+    filter(CSSAbundance!= 0) %>% 
+    summarise(CSSAbundance = sum(CSSAbundance), .groups = 'drop')
+
+  total_abundance <- ps_tbl  %>%
+    group_by(Sample) %>%
+    summarise(Total_Abundance = sum(CSSAbundance), .groups = 'drop')
+
+  Orderes <- Orderes %>%
+    left_join(total_abundance, by = "Sample") %>%
+    mutate(RelativeAbundance = (CSSAbundance / Total_Abundance) * 100) %>%
+    ungroup()
+ 
+  mean_relative_abundance <- Orderes %>%
+    complete(Order, nesting(Sample), fill = list(RelativeAbundance = 0)) %>%
+    filter(!is.na(Order)) %>%
+    group_by(Order) %>%
+    summarise(MeanAbundance = round(mean(RelativeAbundance, na.rm = TRUE), 2))
+  
+  filtered_Orderes <- mean_relative_abundance %>%
+  #  filter(MeanAbundance >= 1) %>%
+    pull(Order)
+    
+  return(filtered_Orderes)
+}
+
+normal_16s <- filtered_combined_data %>% filter(Marker == "16S")
+normal_18s <- filtered_combined_data %>% filter(Marker == "18S")
+normal_its <- filtered_combined_data %>% filter(Marker == "ITS")
+
+filtered_Orderes_16s_normal <- taxon_filtering_normal(normal_16s)
+filtered_Orderes_18s_normal <- taxon_filtering_normal(normal_18s)
+filtered_Orderes_its_normal <- taxon_filtering_normal(normal_its)
+
+all_filtered_Orderes_normal <- unique(c(filtered_Orderes_its_normal,
+                                 filtered_Orderes_18s_normal,
+                                 filtered_Orderes_16s_normal))
+
+Order_to_remove <- "Clitellata"  
+
+all_filtered_Orderes_normal <- setdiff(all_filtered_Orderes_normal, Order_to_remove)
+
+filtered_data_final_normal <- filtered_combined_data  %>%
+  filter(Order %in% all_filtered_Orderes_normal) %>%
+  select(Sample, Order, CSSAbundance, Season, Marker) %>%
+  group_by(Sample, Order, Season, Marker) %>%
+  summarise(Abundance = sum(CSSAbundance), .groups = 'drop')
+
+split_data_by_marker <- split(filtered_data_final_normal, filtered_data_final_normal$Marker)
+
+filtered_data_16S <- split_data_by_marker$`16S`
+filtered_data_18S <- split_data_by_marker$`18S`
+filtered_data_ITS  <- split_data_by_marker$`ITS`
+
+wide_data_16S_for_pcoa <- filtered_data_16S %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+wide_data_18S_for_pcoa <- filtered_data_18S %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+wide_data_ITS_for_pcoa <- filtered_data_ITS %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+t_wide_data_16S <- t(wide_data_16S_for_pcoa)
+t_wide_data_18S <- t(wide_data_18S_for_pcoa)
+t_wide_data_ITS <- t(wide_data_ITS_for_pcoa)
+
+rownames(t_wide_data_16S) <- gsub("[[:space:]]", "_", rownames(t_wide_data_16S)) 
+rownames(t_wide_data_18S) <- gsub("[[:space:]]", "_", rownames(t_wide_data_18S))  
+rownames(t_wide_data_ITS) <- gsub("[[:space:]]", "_", rownames(t_wide_data_ITS)) 
+
+metadata_16S <- metadata[match(colnames(t_wide_data_16S), metadata$Sample), ]
+metadata_18S <- metadata[match(colnames(t_wide_data_18S), metadata$Sample), ]
+metadata_ITS <- metadata[match(colnames(t_wide_data_ITS), metadata$Sample), ]
+
+colData_16S <- data.frame(sample = colnames(t_wide_data_16S), Season = metadata_16S$Season)
+colData_16S$Season <- factor(colData_16S$Season, levels = c("Dry", "Wet"))
+se_16S <- SummarizedExperiment(assays = list(counts = as.matrix(t_wide_data_16S)), colData = colData_16S)
+se_16S <- relativeAb(se_16S)
+
+colData_18S <- data.frame(sample = colnames(t_wide_data_18S), Season = metadata_18S$Season)
+colData_18S$Season <- factor(colData_18S$Season, levels = c("Dry", "Wet"))
+se_18S <- SummarizedExperiment(assays = list(counts = as.matrix(t_wide_data_18S)), colData = colData_18S)
+se_18S <- relativeAb(se_18S)
+
+colData_ITS <- data.frame(sample = colnames(t_wide_data_ITS), Season = metadata_ITS$Season)
+colData_ITS$Season <- factor(colData_ITS$Season, levels = c("Dry", "Wet"))
+se_ITS <- SummarizedExperiment(assays = list(counts = as.matrix(t_wide_data_ITS)), colData = colData_ITS)
+se_ITS <- relativeAb(se_ITS)
+```
+
+
+```{r}
+res_16S <- lefser(se_16S, groupCol = "Season", alpha = 0.05)
+res_18S <- lefser(se_18S, groupCol = "Season", alpha = 0.05)
+res_ITS <- lefser(se_ITS, groupCol = "Season", alpha = 0.05)
+
+res_16S$dataset <- "16S"
+res_18S$dataset <- "18S"
+res_ITS$dataset <- "ITS"
+
+combined_res <- bind_rows(res_16S, res_18S, res_ITS)
+```
+
+
+```{r}
+pdf("lefser-Order.pdf", width = 7, height = 8)
+ggplot(combined_res, aes(x = reorder(Names, scores), y = scores, fill = ifelse(scores > 0, "Wet", "Dry"))) +
+  geom_bar(stat = "identity", position = "dodge", linewidth = 0.3, width = 0.5) +  
+  coord_flip() +
+  labs(x = "Order", y = "Linear Discriminant Analysis Score", title = "LEfSe - Significant Orderes", fill = "Season") +
+  scale_fill_manual(values = c("Wet" = "blue", "Dry" = "red")) +  
+  theme_pubr() + 
+  theme(panel.grid.major = element_line(color = "gray80", linetype = "dashed"),
+        legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 12),
+        legend.title = element_text(hjust = 0.5, size = 14),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 11),
+        axis.text = element_text(size = 12),
+        legend.key.size = unit(1, 'lines')) +
+  scale_y_continuous(minor_breaks = seq(-5, 5, by = 2), limits = c(-5.2, 5.2), 
+      expand = c(0, 0))  
+dev.off()
+```
+
+
+
+
+```{r}
+res_16S <- lefser(se_16S, 
+                  groupCol = "Season", 
+                  kruskal.threshold = 0.05,  
+                  wilcox.threshold = 0.05,    
+                  lda.threshold = 0)       
+
+res_18S <- lefser(se_18S, 
+                  groupCol = "Season", 
+                  kruskal.threshold = 0.05,
+                  wilcox.threshold = 0.05,
+                  lda.threshold = 0)
+
+res_ITS <- lefser(se_ITS, 
+                  groupCol = "Season", 
+                  kruskal.threshold = 0.05,
+                  wilcox.threshold = 0.05,
+                  lda.threshold = 0)
+
+res_16S$dataset <- "16S"
+res_18S$dataset <- "18S"
+res_ITS$dataset <- "ITS"
+
+combined_res <- bind_rows(res_16S, res_18S, res_ITS)
+```
+
+
+```{r}
+selected_photosynthesizers <- c(
+  "Bacillariales", "Chaetopeltidales", "Chaetophorales", "Charophyta*",
+  "Chlamydomonadales", "Chlorellales", "Chlorocystidales", "Chlorosarcinales",
+  "Cladophorales", "Eunotiales", "Eustigmatales", "Leptolyngbyales",
+  "Mastogloiales", "Naviculales", "Nostocales",  "Prasiolales", "Sphaeropleales", "TIS Fam. Coccomyxaceae", "TIS Fam. Leptosiraceae", "Trebouxiales", "Trentepohliales",
+  "Ulotrichales",  "Watanabeales"
+)
+
+filtered_combined_res <- combined_res %>%
+ mutate(Names = str_replace_all(Names, "_", " ")) %>%
+ filter(Names %in% selected_photosynthesizers)
+
+
+pdf("lefser-Order.pdf", width = 6, height = 3)
+ggplot(filtered_combined_res, 
+       aes(x = reorder(Names, scores), 
+           y = scores, 
+           fill = ifelse(scores > 0, "Wet", "Dry"))) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.1), linewidth = 0.3, width = 0.5) +  
+  coord_flip() +
+  labs(x = "Orders", 
+       y = "Linear Discriminant Analysis Score", 
+       title = "LEfSe - Significant Photosynthetic Orders", 
+       fill = "Season") +
+  scale_fill_manual(values = c("Wet" = "blue", "Dry" = "red")) +  
+  theme_pubr() + 
+  theme(panel.grid.major = element_line(color = "gray80", linetype = "dashed"),
+        legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 12),
+        legend.title = element_text(hjust = 0.5, size = 10),
+        legend.text = element_text(size = 9),
+        axis.title = element_text(size = 11),
+        axis.text = element_text(size = 9),
+        legend.key.size = unit(1, 'lines')) +
+  scale_y_continuous(minor_breaks = seq(-5, 5, by = 2), 
+                    limits = c(-5.2, 5.2), 
+                    expand = c(0, 0))
+dev.off()
+```
+

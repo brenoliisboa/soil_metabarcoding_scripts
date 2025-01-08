@@ -1,0 +1,534 @@
+```{r, message =FALSE, warning=FALSE}
+library(metagenomeSeq)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(vegan)
+library(zCompositions)
+library(compositions)
+```
+
+```{r}
+filtered_ps_tbl_16s_euka <- filtered_ps_tbl_16s_euka[, !(names(filtered_ps_tbl_16s_euka) %in% c("CLR_CZM", "CSSAbundance"))]
+```
+
+```{r}
+filtered_combined_data <- filtered_combined_data[, !(names(filtered_combined_data) %in% c("CLR", "CLR_CZM", "CSS_Abundance" , "RarefiedAbundance"))]
+```
+
+
+```{r}
+sample_totals <- combined_data %>%
+  group_by(Marker, Sample) %>%
+  summarize(sample_total = sum(Abundance),
+            .groups = 'drop')
+
+low_otus <- combined_data %>%
+  left_join(sample_totals, by = c("Marker", "Sample")) %>%
+  mutate(rel_abundance = (Abundance/sample_total)*100) %>%
+  group_by(Marker, OTU) %>%
+  summarize(
+    n_samples = sum(Abundance > 0),
+    total_abundance = sum(Abundance),
+    mean_abundance_when_present = mean(Abundance[Abundance > 0]),
+    max_abundance = max(Abundance),
+    mean_rel_abundance = mean(rel_abundance[Abundance > 0]),
+    max_rel_abundance = max(rel_abundance),
+    samples_present = list(Sample[Abundance > 0]),
+    .groups = 'drop'
+  ) %>%
+  filter(n_samples <= 2 & mean_abundance_when_present <= 30) %>%
+  arrange(Marker, mean_rel_abundance)
+
+summary_low <- low_otus %>%
+  group_by(Marker) %>%
+  summarize(
+    n_otus = n(),
+    mean_abs_abundance = mean(mean_abundance_when_present),
+    mean_rel_abundance = mean(mean_rel_abundance),
+    max_rel_abundance = max(max_rel_abundance),
+    mostly_single_counts = sum(max_abundance == 1),
+    .groups = 'drop'
+  )
+```
+
+```{r}
+##### Filter whole data per marker
+
+
+# Calculate sample totals PER MARKER
+sample_totals <- combined_data %>%
+  group_by(Marker, Sample) %>%
+  summarize(sample_total = sum(Abundance), .groups = 'drop')
+
+# Calculate OTU statistics including taxonomic information
+# First get a single phylum value per OTU
+otu_taxonomy <- combined_data %>%
+  distinct(Marker, OTU, Phylum)
+
+otu_stats <- combined_data %>%
+  left_join(sample_totals, by = c("Marker", "Sample")) %>%
+  mutate(rel_abundance = (Abundance / sample_total) * 100) %>%
+  group_by(Marker, OTU) %>%
+  summarize(
+    n_samples = sum(Abundance > 0),
+    mean_rel_abundance = mean(rel_abundance[Abundance > 0], na.rm = TRUE),
+    .groups = 'drop') %>%
+  # Join with the correct taxonomic information
+  left_join(otu_taxonomy, by = c("Marker", "OTU"))
+
+# Apply filtering criteria within each marker
+otus_to_keep <- otu_stats %>%
+  group_by(Marker) %>%
+  filter(
+    # For OTUs with phylum: EITHER condition must be met
+    (!is.na(Phylum) & (n_samples >= 2 | mean_rel_abundance >= 0.1)) |
+    # For OTUs without phylum: EITHER condition must be met
+    (is.na(Phylum) & (n_samples >= 5 | mean_rel_abundance >= 2))
+  ) %>%
+  ungroup()
+
+
+# Select only necessary columns
+otus_to_keep <- otus_to_keep[, c("Marker", "OTU")]
+
+# Filter the original dataset
+filtered_data <- combined_data %>%
+  inner_join(otus_to_keep, by = c("Marker", "OTU"))
+
+# Compare before and after counts by marker
+before <- table(combined_data$Marker)
+after <- table(filtered_data$Marker)
+comparison <- data.frame(
+  Marker = names(before),
+  Before = as.numeric(before),
+  After = as.numeric(after)
+)
+print(comparison)
+
+# Add diagnostic information
+diagnostics <- otu_stats %>%
+  group_by(Marker) %>%
+  summarize(
+    total_otus = n(),
+    otus_with_na = sum(is.na(Phylum)),
+    otus_with_phylum = sum(!is.na(Phylum))
+  )
+print("OTU counts by marker and phylum status:")
+print(diagnostics)
+
+# Clean up temporary columns
+cols_to_remove <- c("sample_total", "rel_abundance", "n_samples", "mean_rel_abundance")
+filtered_combined_data <- filtered_data[, !(names(filtered_data) %in% cols_to_remove)]
+```
+
+
+```{r}
+##### 16s w/ eukaryotes
+
+
+# Calculate sample totals per sample
+sample_totals <- ps_tbl_16s_euka%>%
+  group_by(Sample) %>%
+  summarize(sample_total = sum(Abundance), .groups = 'drop')
+
+# Calculate OTU statistics including taxonomic information
+# First get a single phylum value per OTU
+otu_taxonomy <- ps_tbl_16s_euka%>%
+  distinct(OTU, Phylum)
+
+otu_stats <- ps_tbl_16s_euka%>%
+  left_join(sample_totals, by = "Sample") %>%
+  mutate(rel_abundance = (Abundance / sample_total) * 100) %>%
+  group_by(OTU) %>%
+  summarize(
+    n_samples = sum(Abundance > 0),
+    mean_rel_abundance = mean(rel_abundance[Abundance > 0], na.rm = TRUE),
+    .groups = 'drop') %>%
+  # Join with the correct taxonomic information
+  left_join(otu_taxonomy, by = "OTU")
+
+# Apply filtering criteria
+otus_to_keep <- otu_stats %>%
+  filter(
+    # For OTUs with phylum: EITHER condition must be met
+    (!is.na(Phylum) & (n_samples >= 2 | mean_rel_abundance >= 0.1)) |
+    # For OTUs without phylum: EITHER condition must be met
+    (is.na(Phylum) & (n_samples >= 5 | mean_rel_abundance >= 2))
+  ) %>%
+  ungroup()
+
+# Select only necessary columns
+otus_to_keep <- otus_to_keep[, "OTU"]
+
+# Filter the original dataset
+filtered_ps_tbl_16s_euka <- ps_tbl_16s_euka%>%
+  inner_join(otus_to_keep, by = "OTU")
+
+# Compare before and after counts
+before <- nrow(ps_tbl_16s_euka)
+after <- nrow(ps_tbl_16s_euka)
+comparison <- data.frame(
+  Total_Before = before,
+  Total_After = after
+)
+print(comparison)
+
+# Add diagnostic information
+diagnostics <- otu_stats %>%
+  summarize(
+    total_otus = n(),
+    otus_with_na = sum(is.na(Phylum)),
+    otus_with_phylum = sum(!is.na(Phylum))
+  )
+print("OTU counts by phylum status:")
+print(diagnostics)
+
+# Clean up temporary columns
+cols_to_remove <- c("sample_total", "rel_abundance", "n_samples", "mean_rel_abundance")
+filtered_ps_tbl_16s_euka <- filtered_ps_tbl_16s_euka[, !(names(filtered_ps_tbl_16s_euka) %in% cols_to_remove)]
+```
+```{r}
+set.seed(123)
+```
+
+```{r}
+## Iterative Rarefaction
+data_16S <- filtered_combined_data %>% filter(Marker == "16S")
+data_18S <- filtered_combined_data %>% filter(Marker == "18S")
+data_ITS <- filtered_combined_data %>% filter(Marker == "ITS")
+
+data_list <- list(data_16S, data_18S, data_ITS)
+markers <- c("16S", "18S", "ITS")
+rarefied_list <- list()
+
+for (i in 1:3) {
+  data_marker <- data_list[[i]] %>%
+    group_by(Sample, OTU) %>%
+    summarize(Abundance = sum(Abundance), .groups = 'drop')
+  
+  data_wide <- data_marker %>%
+    pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+    column_to_rownames(var = "Sample")
+  
+  min_sample_size <- min(rowSums(data_wide))
+  n_iter <- 100
+  rarefied_counts <- matrix(0, nrow = nrow(data_wide), ncol = ncol(data_wide))
+  rownames(rarefied_counts) <- rownames(data_wide)
+  colnames(rarefied_counts) <- colnames(data_wide)
+  
+  for (j in 1:n_iter) {
+    rarefied_data <- rrarefy(data_wide, sample = min_sample_size)
+    rarefied_counts <- rarefied_counts + rarefied_data
+  }
+  
+  rarefied_counts <- rarefied_counts / n_iter
+  rarefied_long <- as.data.frame(rarefied_counts) %>%
+    rownames_to_column(var = "Sample") %>%
+    pivot_longer(-Sample, names_to = "OTU", values_to = "RarefiedAbundance")
+  rarefied_long$Marker <- markers[i]
+  rarefied_list[[i]] <- rarefied_long
+}
+
+rarefied_combined <- bind_rows(rarefied_list)
+
+filtered_combined_data <- filtered_combined_data %>%
+  left_join(rarefied_combined, by = c("Sample", "OTU", "Marker")) %>%
+  relocate(RarefiedAbundance, .after = 3)
+```
+
+
+```{r}
+## Cumulative Sum Scaling 
+data_16S <- filtered_combined_data %>% filter(Marker == "16S")
+data_18S <- filtered_combined_data %>% filter(Marker == "18S")
+data_ITS <- filtered_combined_data %>% filter(Marker == "ITS")
+
+data_list <- list(data_16S, data_18S, data_ITS)
+markers <- c("16S", "18S", "ITS")
+css_list <- list()
+
+for (i in 1:3) {
+  data_marker <- data_list[[i]] %>%
+    group_by(Sample, OTU) %>%
+    summarize(Abundance = sum(Abundance), .groups = 'drop')
+  
+  data_wide <- data_marker %>%
+    pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+    column_to_rownames(var = "Sample")
+  
+  obj <- newMRexperiment(data_wide)
+  obj_css <- cumNorm(obj, p = cumNormStat(obj))
+  norm_counts <- MRcounts(obj_css, norm = TRUE)
+  
+  norm_long <- as.data.frame(norm_counts) %>%
+    rownames_to_column(var = "Sample") %>%
+    pivot_longer(-Sample, names_to = "OTU", values_to = "CSSAbundance")
+  norm_long$Marker <- markers[i]
+  css_list[[i]] <- norm_long
+}
+
+css_combined <- bind_rows(css_list)
+
+filtered_combined_data <- filtered_combined_data %>%
+  left_join(css_combined, by = c("Sample", "OTU", "Marker")) %>%
+  relocate(CSSAbundance, .after = 3)
+
+options(scipen = 999)
+
+filtered_combined_data <- filtered_combined_data %>%
+  mutate(CSSAbundance = as.numeric(CSSAbundance),
+         RarefiedAbundance = as.numeric(RarefiedAbundance))
+
+```
+
+```{r}
+# Sum abundances by Sample and OTU
+data_16S_sum <- filtered_ps_tbl_16s_euka %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+# Convert to wide format
+data_16S_wide <- data_16S_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+# Apply CSS normalization
+obj <- newMRexperiment(data_16S_wide)
+obj_css <- cumNorm(obj, p = cumNormStat(obj))
+norm_counts <- MRcounts(obj_css, norm = TRUE)
+
+# Convert to long format
+css_long <- as.data.frame(norm_counts) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CSSAbundance")
+
+# Merge with the original dataframe
+filtered_ps_tbl_16s_euka <- filtered_ps_tbl_16s_euka %>%
+  left_join(css_long, by = c("Sample", "OTU")) %>%
+  relocate(CSSAbundance, .after = 3)
+
+# Convert CSSAbundance to numeric
+filtered_ps_tbl_16s_euka <- filtered_ps_tbl_16s_euka %>%
+  mutate(CSSAbundance = as.numeric(CSSAbundance))
+
+```
+
+
+```{r}
+## Count Zero Multiplicative (CZM) zero replacement and Central Log Ratio transformation
+data_16S <- filtered_combined_data %>% filter(Marker == "16S")
+data_18S <- filtered_combined_data %>% filter(Marker == "18S")
+data_ITS <- filtered_combined_data %>% filter(Marker == "ITS")
+
+data_16S_sum <- data_16S %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+data_18S_sum <- data_18S %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+data_ITS_sum <- data_ITS %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+data_16S_wide <- data_16S_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+data_18S_wide <- data_18S_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+data_ITS_wide <- data_ITS_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+czm_16S <- data.frame(
+  clr(cmultRepl(data_16S_wide, method="CZM", label=0, z.warning=0.99, z.delete=FALSE))
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR_CZM") %>%
+  mutate(
+    OTU = gsub("^X", "", OTU),
+    Marker = "16S"
+  )
+
+czm_18S <- data.frame(
+  clr(cmultRepl(data_18S_wide, method="CZM", label=0, z.warning=0.99, z.delete=FALSE))
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR_CZM") %>%
+  mutate(
+    OTU = gsub("^X", "", OTU),
+    Marker = "18S"
+  )
+
+czm_ITS <- data.frame(
+  clr(cmultRepl(data_ITS_wide, method="CZM", label=0, z.warning=0.99, z.delete=FALSE))
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR_CZM") %>%
+  mutate(
+    OTU = gsub("^X", "", OTU),
+    Marker = "ITS"
+  )
+
+czm_all <- bind_rows(czm_16S, czm_18S, czm_ITS)
+
+filtered_combined_data <- merge(filtered_combined_data, 
+                              czm_all[, c("Sample", "OTU", "Marker", "CLR_CZM")], 
+                              by = c("Sample", "OTU", "Marker"))
+```
+
+```{r}
+## Pure CLR
+# Split by marker
+data_16S <- filtered_combined_data %>% filter(Marker == "16S")
+data_18S <- filtered_combined_data %>% filter(Marker == "18S")
+data_ITS <- filtered_combined_data %>% filter(Marker == "ITS")
+
+# Get marker-specific pseudocounts
+min_16S <- min(data_16S$Abundance[data_16S$Abundance > 0])
+min_18S <- min(data_18S$Abundance[data_18S$Abundance > 0])
+min_ITS <- min(data_ITS$Abundance[data_ITS$Abundance > 0])
+
+# Sum abundances
+data_16S_sum <- data_16S %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+data_18S_sum <- data_18S %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+data_ITS_sum <- data_ITS %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+# Convert to wide format
+data_16S_wide <- data_16S_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+data_18S_wide <- data_18S_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+data_ITS_wide <- data_ITS_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+# CLR and clean OTU names
+clr_16S <- data.frame(
+  clr(data_16S_wide + min_16S)
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR") %>%
+  mutate(
+    OTU = gsub("^X", "", OTU),  # Remove leading X
+    Marker = "16S"
+  )
+
+clr_18S <- data.frame(
+  clr(data_18S_wide + min_18S)
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR") %>%
+  mutate(
+    OTU = gsub("^X", "", OTU),  # Remove leading X
+    Marker = "18S"
+  )
+
+clr_ITS <- data.frame(
+  clr(data_ITS_wide + min_ITS)
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR") %>%
+  mutate(
+    OTU = gsub("^X", "", OTU),  # Remove leading X
+    Marker = "ITS"
+  )
+
+# Combine and merge
+clr_all <- bind_rows(clr_16S, clr_18S, clr_ITS)
+
+filtered_combined_data <- merge(filtered_combined_data, 
+                              clr_all[, c("Sample", "OTU", "Marker", "CLR")], 
+                              by = c("Sample", "OTU", "Marker"), 
+                              all.x = TRUE)
+
+print(paste("Total rows:", nrow(filtered_combined_data)))
+print(paste("NAs in CLR:", sum(is.na(filtered_combined_data$CLR))))
+```
+
+```{r}
+filtered_combined_data <- filtered_combined_data %>%
+  relocate(CLR, .after = Abundance) %>%
+  relocate(CLR_CZM, .after = CLR)
+```
+
+```{r}
+filtered_ps_tbl_16s_euka_sum <- filtered_ps_tbl_16s_euka %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+filtered_ps_tbl_16s_euka_wide <- filtered_ps_tbl_16s_euka_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+czm_16s_euka <- data.frame(
+  clr(cmultRepl(filtered_ps_tbl_16s_euka_wide, method = "CZM", label = 0, z.warning = 0.99, z.delete = FALSE))
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR_CZM") %>%
+  mutate(OTU = gsub("^X", "", OTU))
+
+filtered_ps_tbl_16s_euka <- merge(
+  filtered_ps_tbl_16s_euka, 
+  czm_16s_euka[, c("Sample", "OTU", "CLR_CZM")], 
+  by = c("Sample", "OTU")
+)
+```
+
+
+
+```{r}
+# Get minimum positive abundance for pseudocount
+min_16S <- min(filtered_ps_tbl_16s_euka$Abundance[filtered_ps_tbl_16s_euka$Abundance > 0])
+
+# Sum abundances by Sample and OTU
+data_16S_sum <- filtered_ps_tbl_16s_euka %>%
+  group_by(Sample, OTU) %>%
+  summarize(Abundance = sum(Abundance), .groups = 'drop')
+
+# Convert to wide format
+data_16S_wide <- data_16S_sum %>%
+  pivot_wider(names_from = OTU, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames(var = "Sample")
+
+# Apply CLR transformation
+clr_16S <- data.frame(
+  clr(data_16S_wide + min_16S)
+) %>%
+  rownames_to_column(var = "Sample") %>%
+  pivot_longer(-Sample, names_to = "OTU", values_to = "CLR") %>%
+  mutate(OTU = gsub("^X", "", OTU))  # Remove leading 'X'
+
+# Merge with the original dataframe
+filtered_ps_tbl_16s_euka <- merge(
+  filtered_ps_tbl_16s_euka, 
+  clr_16S[, c("Sample", "OTU", "CLR")], 
+  by = c("Sample", "OTU"), 
+  all.x = TRUE
+)
+
+print(paste("Total rows:", nrow(filtered_ps_tbl_16s_euka)))
+print(paste("NAs in CLR:", sum(is.na(filtered_ps_tbl_16s_euka$CLR))))
+
+```
+```{r}
+filtered_ps_tbl_16s_euka <- filtered_ps_tbl_16s_euka %>%
+  relocate(CLR_CZM, .after = Abundance) 
+```

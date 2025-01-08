@@ -1,0 +1,956 @@
+---
+title: "beta_diversity_analysis"
+author: "Breno"
+date: "2024-08-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(phyloseq)
+library(picante)
+library(phyloseq)
+library(dplyr)
+library(effsize)
+library(grid)
+library(rstatix)
+library(ggnewscale)
+library(vegan)
+library(tidyr)
+library(tidyverse)
+library(ggpubr)
+library(reshape2)
+library(scales)
+library(GUniFrac)
+library(ape)  
+library(cluster)
+library(nomclust)
+library(indicspecies)
+library(lefser)
+library(SummarizedExperiment)
+my_comparisons <- list(   c("Wet", "Dry"))
+metadata <- filtered_combined_data %>%
+  select(Sample, Season) %>%
+  distinct() 
+```
+
+```{r}
+## Normalized
+# Filter and reshape the combined_data for OTU CSSAbundance
+otu_table_combined <- filtered_combined_data %>%
+  select(Sample, OTU, CSSAbundance) %>%
+  spread(key = OTU, value = CSSAbundance, fill = 0)  # Reshape to have OTUs as columns, fill missing values with 0
+
+
+# 16S
+
+otu_table_16S <- filtered_combined_data %>%
+  filter(Marker == "16S") %>%
+  select(Sample, OTU, CSSAbundance) %>%
+  spread(key = OTU, value = CSSAbundance, fill = 0)  # Reshape to have OTUs as columns, fill missing values with 0
+
+# 18S
+
+otu_table_18S <- filtered_combined_data %>%
+  filter(Marker == "18S") %>%
+  select(Sample, OTU, CSSAbundance) %>%
+  spread(key = OTU, value = CSSAbundance, fill = 0)  # Reshape to have OTUs as columns, fill missing values with 0
+
+# ITS
+
+otu_table_ITS <- filtered_combined_data %>%
+  filter(Marker == "ITS") %>%
+  select(Sample, OTU, CSSAbundance) %>%
+  spread(key = OTU, value = CSSAbundance, fill = 0)  # Reshape to have OTUs as columns, fill missing values with 0
+
+# Ensure that metadata columns (like Season, Marker) are preserved separately
+metadata <- filtered_combined_data %>%
+  select(Sample, Season) %>%
+  distinct()  # Ensure there are no duplicate rows for the same Sample
+```
+
+```{r}
+## Rarefied
+# Filter OTUs with summed abundance > 0 before spreading
+otu_table_rarefied_combined <- filtered_combined_data %>%
+  select(Sample, OTU, RarefiedAbundance) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(RarefiedAbundance)) %>%
+  filter(SummedAbundance > 0) %>%
+  left_join(filtered_combined_data, by = "OTU") %>%  # Join back to get Sample and RarefiedAbundance
+  select(Sample, OTU, RarefiedAbundance) %>%
+  spread(key = OTU, value = RarefiedAbundance, fill = 0)
+
+
+# 16S
+otu_table_rarefied_16S <- filtered_combined_data %>%
+  filter(Marker == "16S") %>%
+  select(Sample, OTU, RarefiedAbundance) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(RarefiedAbundance)) %>%
+  filter(SummedAbundance > 0) %>%
+  left_join(filtered_combined_data %>% filter(Marker == "16S"), by = "OTU") %>%  # Join back filtered OTUs
+  select(Sample, OTU, RarefiedAbundance) %>%
+  spread(key = OTU, value = RarefiedAbundance, fill = 0)  # Reshape to have OTUs as columns
+
+
+# 18S
+otu_table_rarefied_18S <- filtered_combined_data %>%
+  filter(Marker == "18S") %>%
+  select(Sample, OTU, RarefiedAbundance) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(RarefiedAbundance)) %>%
+  filter(SummedAbundance > 0) %>%
+  left_join(filtered_combined_data %>% filter(Marker == "18S"), by = "OTU") %>%  # Join back filtered OTUs
+  select(Sample, OTU, RarefiedAbundance) %>%
+  spread(key = OTU, value = RarefiedAbundance, fill = 0)  # Reshape to have OTUs as columns
+
+
+# ITS
+otu_table_rarefied_ITS <- filtered_combined_data %>%
+  filter(Marker == "ITS") %>%
+  select(Sample, OTU, RarefiedAbundance) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(RarefiedAbundance)) %>%
+  filter(SummedAbundance > 0) %>%
+  left_join(filtered_combined_data %>% filter(Marker == "ITS"), by = "OTU") %>%  # Join back filtered OTUs
+  select(Sample, OTU, RarefiedAbundance) %>%
+  spread(key = OTU, value = RarefiedAbundance, fill = 0)  # Reshape to have OTUs as columns
+```
+
+
+```{r}
+# Step 1: Extract the phylogenetic trees from the phyloseq objects
+phy_tree_16s <- phy_tree(ps_16s)
+phy_tree_18s <- phy_tree(ps_18s)
+phy_tree_ITS <- phy_tree(ps_its)
+```
+
+
+```{r}
+# Step 2: Function to prune the phylogenetic tree to match the OTUs in the modified data
+prune_phy_tree_to_marker_v2 <- function(phy_tree, df_marker) {
+  otus_in_data <- unique(df_marker$OTU)
+  
+  print(paste("Number of unique OTUs in data:", length(otus_in_data)))
+  print(paste("Number of tips in tree:", length(phy_tree$tip.label)))
+  
+  otus_in_tree <- intersect(otus_in_data, phy_tree$tip.label)
+  print(paste("Number of OTUs from data present in tree:", length(otus_in_tree)))
+  
+  phy_tree_pruned <- keep.tip(phy_tree, otus_in_tree)
+  
+  if (is.null(phy_tree_pruned)) {
+    print("Pruning resulted in a NULL tree")
+  } else {
+    print(paste("Number of tips in pruned tree:", length(phy_tree_pruned$tip.label)))
+  }
+  
+  return(phy_tree_pruned)
+}
+
+# Step 3: Apply pruning for each phylogenetic tree based on the corresponding filtered table
+phy_tree_16s_pruned <- prune_phy_tree_to_marker_v2(phy_tree_16s, ps_tbl_16S)
+
+phy_tree_18s_pruned <- prune_phy_tree_to_marker_v2(phy_tree_18s, ps_tbl_18S)
+
+phy_tree_ITS_pruned <- prune_phy_tree_to_marker_v2(phy_tree_ITS, ps_tbl_ITS)
+
+```
+
+```{r}
+# Step 1: Extract OTU names from the rarefied OTU tables without applying the filter
+
+# For 16S
+otus_rarefied_16S <- otu_table_rarefied_16S %>%
+  gather(key = "OTU", value = "CSSAbundance", -Sample) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(CSSAbundance)) %>%
+  filter(SummedAbundance > 0) %>%  # Remove OTUs with summed abundance of 0
+  select(OTU) %>%
+  unique()  # Get unique OTU names
+
+# For 18S
+otus_rarefied_18S <- otu_table_rarefied_18S %>%
+  gather(key = "OTU", value = "CSSAbundance", -Sample) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(CSSAbundance)) %>%
+  filter(SummedAbundance > 0) %>%  # Remove OTUs with summed abundance of 0
+  select(OTU) %>%
+  unique()  # Get unique OTU names
+
+# For ITS
+otus_rarefied_ITS <- otu_table_rarefied_ITS %>%
+  gather(key = "OTU", value = "CSSAbundance", -Sample) %>%
+  group_by(OTU) %>%
+  summarize(SummedAbundance = sum(CSSAbundance)) %>%
+  filter(SummedAbundance > 0) %>%  # Remove OTUs with summed abundance of 0
+  select(OTU) %>%
+  unique()  # Get unique OTU names
+
+# Step 2: Apply pruning for each phylogenetic tree based on the OTUs in the rarefied data
+
+# 16S
+phy_tree_16s_pruned_rarefied <- prune_phy_tree_to_marker_v2(phy_tree_16s, otus_rarefied_16S)
+
+# 18S
+phy_tree_18s_pruned_rarefied <- prune_phy_tree_to_marker_v2(phy_tree_18s, otus_rarefied_18S)
+
+# ITS
+phy_tree_ITS_pruned_rarefied <- prune_phy_tree_to_marker_v2(phy_tree_ITS, otus_rarefied_ITS)
+```
+
+```{r}
+jaccard <- function(otu_table, metadata) {
+  # Calculate Jaccard distance from the binary (presence/absence) OTU table
+  otu_table_binary <- otu_table[, -1] > 0  # Convert to presence/absence (TRUE/FALSE)
+  jaccard_dist <- vegdist(otu_table_binary, method = "jaccard")  # Jaccard distance
+
+  # Perform NMDS
+  nmds_result_jaccard <- metaMDS(jaccard_dist, k = 2, trymax = 100)
+  stress_value <- nmds_result_jaccard$stress 
+  nmds_df_jaccard <- as.data.frame(scores(nmds_result_jaccard))
+  colnames(nmds_df_jaccard) <- c("NMDS1", "NMDS2")
+  
+  nmds_df_jaccard$NMDS1 <- nmds_df_jaccard$NMDS1 / max(abs(nmds_df_jaccard$NMDS1))
+nmds_df_jaccard$NMDS2 <- nmds_df_jaccard$NMDS2 / max(abs(nmds_df_jaccard$NMDS2))
+
+  # Combine the nmds results with the metadata
+  nmds_df_jaccard <- cbind(metadata, nmds_df_jaccard)
+
+  # Return both the distance matrix and the nmds results as a list
+  result <- list(
+    distance_matrix = jaccard_dist,
+    nmds_df = nmds_df_jaccard,
+    stress = stress_value  # Removed eigenvalues
+  )
+  
+  return(result)
+}
+
+# Run NMDS for different datasets
+jaccard_16S <- jaccard(otu_table_rarefied_16S, metadata)
+jaccard_18S <- jaccard(otu_table_rarefied_18S, metadata)
+jaccard_ITS <- jaccard(otu_table_rarefied_ITS, metadata)
+```
+
+```{r}
+bray_curtis <- function(otu_table, metadata) {
+  # Calculate Bray-Curtis distance from the reshaped OTU table
+  bray_curtis_dist <- vegdist(otu_table[, -1], method = "bray")  # Exclude the Sample column
+  
+  # Perform NMDS
+  nmds_result <- metaMDS(bray_curtis_dist, k = 2, trymax = 100)  # Perform NMDS
+  
+  # Extract NMDS stress value
+  stress_value <- nmds_result$stress
+  
+  # Extract NMDS coordinates
+  nmds_df_bray_curtis <- as.data.frame(scores(nmds_result))
+  colnames(nmds_df_bray_curtis) <- c("NMDS1", "NMDS2")
+  
+  nmds_df_bray_curtis$NMDS1 <- nmds_df_bray_curtis$NMDS1 / max(abs(nmds_df_bray_curtis$NMDS1))
+nmds_df_bray_curtis$NMDS2 <- nmds_df_bray_curtis$NMDS2 / max(abs(nmds_df_bray_curtis$NMDS2))
+
+  # Combine the NMDS results with the metadata
+  nmds_df_bray_curtis <- cbind(metadata, nmds_df_bray_curtis)
+  
+  # Return the distance matrix, NMDS results, and stress value
+  result <- list(
+    distance_matrix = bray_curtis_dist,
+    nmds_df = nmds_df_bray_curtis,
+    stress = stress_value  # Removed eigenvalues, added stress
+  )
+  
+  return(result)
+}
+
+# Run NMDS for each dataset
+bray_curtis_16S <- bray_curtis(otu_table_16S, metadata)
+bray_curtis_18S <- bray_curtis(otu_table_18S, metadata)
+bray_curtis_ITS <- bray_curtis(otu_table_ITS, metadata)
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE}
+# Function to calculate Canberra distance and perform NMDS
+canberra_nmds <- function(otu_table, metadata) {
+  # Calculate Canberra distance
+  canberra_dist <- vegdist(otu_table[, -1], method = "canberra")  # vegdist with method = "canberra"
+  
+  # Perform NMDS
+  nmds_result_canberra <- metaMDS(canberra_dist, k = 2, trymax = 100)
+  stress_value <- nmds_result_canberra$stress
+  
+  # Extract NMDS coordinates
+  nmds_df_canberra <- as.data.frame(scores(nmds_result_canberra))
+  colnames(nmds_df_canberra) <- c("NMDS1", "NMDS2")
+  
+  # Standardize NMDS1 and NMDS2 axes
+  nmds_df_canberra$NMDS1 <- nmds_df_canberra$NMDS1 / max(abs(nmds_df_canberra$NMDS1))
+  nmds_df_canberra$NMDS2 <- nmds_df_canberra$NMDS2 / max(abs(nmds_df_canberra$NMDS2))
+  
+  # Combine NMDS results with metadata
+  nmds_df_canberra <- cbind(metadata, nmds_df_canberra)
+  
+  # Return both distance matrix and NMDS results as a list
+  result <- list(
+    distance_matrix = canberra_dist,
+    nmds_df = nmds_df_canberra,
+    stress = stress_value
+  )
+  
+  return(result)
+}
+
+# Run NMDS with Canberra distance
+canberra_16S <- canberra_nmds(otu_table_16S, metadata)
+canberra_18S <- canberra_nmds(otu_table_18S, metadata)
+canberra_ITS <- canberra_nmds(otu_table_ITS, metadata)
+
+```
+
+
+```{r}
+# UniFrac for 16S
+unifrac_16S <- GUniFrac(as.matrix(otu_table_16S[, -1]), phy_tree_16s_pruned, alpha = c(0, 1))
+
+# UniFrac for 18S
+unifrac_18S <- GUniFrac(as.matrix(otu_table_18S[, -1]), phy_tree_18s_pruned, alpha = c(0, 1))
+
+# UniFrac for ITS
+unifrac_ITS <- GUniFrac(as.matrix(otu_table_ITS[, -1]), phy_tree_ITS_pruned, alpha = c(0, 1))
+
+# UniFrac for 16S
+unifrac_rarefied_16S <- GUniFrac(as.matrix(otu_table_rarefied_16S[, -1]), phy_tree_16s_pruned_rarefied, alpha = c(0, 1))
+
+# UniFrac for 18S
+unifrac_rarefied_18S <- GUniFrac(as.matrix(otu_table_rarefied_18S[, -1]), phy_tree_18s_pruned_rarefied, alpha = c(0, 1))
+
+# UniFrac for ITS
+unifrac_rarefied_ITS <- GUniFrac(as.matrix(otu_table_rarefied_ITS[, -1]), phy_tree_ITS_pruned_rarefied, alpha = c(0, 1))
+```
+
+
+```{r}
+# Extract unweighted UniFrac distances for each marker
+unweighted_unifrac_16S <- as.dist(unifrac_rarefied_16S$unifracs[, , "d_UW"])
+unweighted_unifrac_18S <- as.dist(unifrac_rarefied_18S$unifracs[, , "d_UW"])
+unweighted_unifrac_ITS <- as.dist(unifrac_rarefied_ITS$unifracs[, , "d_UW"])
+
+# Perform NMDS on each UniFrac distance matrix
+unweighted_nmds_16S <- metaMDS(unweighted_unifrac_16S, k = 2, trymax = 100)
+unweighted_nmds_18S <- metaMDS(unweighted_unifrac_18S, k = 2, trymax = 100)
+unweighted_nmds_ITS <- metaMDS(unweighted_unifrac_ITS, k = 2, trymax = 100)
+
+# Extract stress values for each marker
+stress_values <- c(unweighted_nmds_16S$stress, unweighted_nmds_18S$stress, unweighted_nmds_ITS$stress)
+
+# Create data frames for each marker and standardize NMDS axes
+create_standardized_nmds_df <- function(nmds_result, otu_table, marker_name) {
+  df <- data.frame(
+    Sample = otu_table$Sample,
+    NMDS1 = nmds_result$points[, 1],
+    NMDS2 = nmds_result$points[, 2],
+    Marker = marker_name
+  )
+  # Standardize NMDS1 and NMDS2
+  df$NMDS1 <- df$NMDS1 / max(abs(df$NMDS1))
+  df$NMDS2 <- df$NMDS2 / max(abs(df$NMDS2))
+  return(df)
+}
+
+# Apply the function to each marker
+unweighted_df_16S <- create_standardized_nmds_df(unweighted_nmds_16S, otu_table_16S, "16S")
+unweighted_df_18S <- create_standardized_nmds_df(unweighted_nmds_18S, otu_table_18S, "18S")
+unweighted_df_ITS <- create_standardized_nmds_df(unweighted_nmds_ITS, otu_table_ITS, "ITS")
+
+# Combine all standardized NMDS data frames into one
+combined_unweighted_nmds_df <- rbind(unweighted_df_16S, unweighted_df_18S, unweighted_df_ITS)
+
+# Add consistent axis labels to the combined data frame
+combined_unweighted_nmds_df$xlab <- "NMDS1"
+combined_unweighted_nmds_df$ylab <- "NMDS2"
+
+# Add stress value as a label for each marker
+combined_unweighted_nmds_df$stress_label <- paste0("Stress: ", 
+rep(round(stress_values, 3), 
+c(nrow(unweighted_df_16S),          
+nrow(unweighted_df_18S),                                                      nrow(unweighted_df_ITS))))
+
+```
+
+```{r}
+# Extract weighted UniFrac distances for each marker
+w_unifrac_16S <- as.dist(unifrac_16S$unifracs[, , "d_1"])
+w_unifrac_18S <- as.dist(unifrac_18S$unifracs[, , "d_1"])
+w_unifrac_ITS <- as.dist(unifrac_ITS$unifracs[, , "d_1"])
+
+# Perform NMDS on each weighted UniFrac distance matrix
+w_nmds_16S <- metaMDS(w_unifrac_16S, k = 2, trymax = 100)
+w_nmds_18S <- metaMDS(w_unifrac_18S, k = 2, trymax = 100)
+w_nmds_ITS <- metaMDS(w_unifrac_ITS, k = 2, trymax = 100)
+
+# Extract stress values for each marker
+stress_values <- c(w_nmds_16S$stress, w_nmds_18S$stress, w_nmds_ITS$stress)
+
+# Create a function to handle the NMDS data frame creation and standardization
+create_standardized_nmds_df <- function(nmds_result, otu_table, marker_name) {
+  df <- data.frame(
+    Sample = otu_table$Sample,
+    NMDS1 = nmds_result$points[, 1],
+    NMDS2 = nmds_result$points[, 2],
+    Marker = marker_name
+  )
+  # Standardize NMDS1 and NMDS2
+  df$NMDS1 <- df$NMDS1 / max(abs(df$NMDS1))
+  df$NMDS2 <- df$NMDS2 / max(abs(df$NMDS2))
+  return(df)
+}
+
+# Apply the function to each marker
+w_df_16S <- create_standardized_nmds_df(w_nmds_16S, otu_table_16S, "16S")
+w_df_18S <- create_standardized_nmds_df(w_nmds_18S, otu_table_18S, "18S")
+w_df_ITS <- create_standardized_nmds_df(w_nmds_ITS, otu_table_ITS, "ITS")
+
+# Combine all the NMDS data frames into one
+combined_weighted_nmds_df <- rbind(w_df_16S, w_df_18S, w_df_ITS)
+
+# Add consistent axis labels to the combined data frame
+combined_weighted_nmds_df$xlab <- "NMDS1"
+combined_weighted_nmds_df$ylab <- "NMDS2"
+
+# Add stress value as a label for each marker
+combined_weighted_nmds_df$stress_label <- paste0("Stress: ", rep(round(stress_values, 3), 
+                                      c(nrow(w_df_16S), nrow(w_df_18S), nrow(w_df_ITS))))
+
+# Add season information from metadata
+combined_weighted_nmds_df$Season <- metadata$Season[match(combined_weighted_nmds_df$Sample, metadata$Sample)]
+```
+
+
+## Permanova
+
+```{r}
+# Function to create a mapping between distance matrix samples and metadata samples
+create_sample_mapping <- function(metadata, dist_matrix) {
+  metadata_samples <- metadata$Sample  # Correct sample names from metadata
+  dist_matrix_samples <- rownames(as.matrix(dist_matrix))  # Samples from the distance matrix
+  
+  # Ensure that the order is preserved and create a named vector
+  if (length(dist_matrix_samples) != length(metadata_samples)) {
+    stop("Mismatch in the number of samples between the metadata and distance matrix")
+  }
+  
+  # Create a mapping between distance matrix sample names and metadata sample names
+  sample_mapping <- setNames(metadata_samples, dist_matrix_samples)
+  return(sample_mapping)
+}
+
+# List of distance matrices and their corresponding names
+distance_matrices <- list(
+  jaccard_16S = jaccard_16S$distance_matrix,
+  jaccard_18S = jaccard_18S$distance_matrix,
+  jaccard_ITS = jaccard_ITS$distance_matrix,
+  bray_curtis_16S = bray_curtis_16S$distance_matrix,
+  bray_curtis_18S = bray_curtis_18S$distance_matrix,
+  bray_curtis_ITS = bray_curtis_ITS$distance_matrix,
+  canberra_16S = canberra_16S$distance_matrix,
+  canberra_18S = canberra_18S$distance_matrix,
+  canberra_ITS = canberra_ITS$distance_matrix,
+  unweighted_unifrac_16S = unweighted_unifrac_16S,
+  unweighted_unifrac_18S = unweighted_unifrac_18S,
+  unweighted_unifrac_ITS = unweighted_unifrac_ITS,
+  weighted_unifrac_16S = w_unifrac_16S,
+  weighted_unifrac_18S = w_unifrac_18S,
+  weighted_unifrac_ITS = w_unifrac_ITS
+)
+
+# Use the first distance matrix to create the mapping
+sample_mapping <- create_sample_mapping(metadata, distance_matrices[[1]])
+
+# NEW CODE: Create UniFrac mapping
+create_unifrac_mapping <- function(sample_mapping) {
+  unifrac_mapping <- setNames(
+    sample_mapping,
+    paste0("comm_", names(sample_mapping))
+  )
+  return(unifrac_mapping)
+}
+
+unifrac_mapping <- create_unifrac_mapping(sample_mapping)
+
+# NEW CODE: Updated rename_samples function
+rename_samples <- function(dist_matrix, sample_mapping, unifrac_mapping) {
+  mat <- as.matrix(dist_matrix)
+  
+  # Determine which mapping to use
+  if (all(grepl("^comm_", rownames(mat)))) {
+    mapping_to_use <- unifrac_mapping
+  } else {
+    mapping_to_use <- sample_mapping
+  }
+  
+  # Find common samples
+  common_samples <- intersect(rownames(mat), names(mapping_to_use))
+  
+  if (length(common_samples) == 0) {
+    stop("No common samples found between the distance matrix and the sample mapping")
+  }
+  
+  # Subset the matrix to only include common samples
+  mat <- mat[common_samples, common_samples]
+  
+  # Apply the sample mapping to the rownames and colnames
+  rownames(mat) <- mapping_to_use[rownames(mat)]
+  colnames(mat) <- mapping_to_use[colnames(mat)]
+  
+  return(as.dist(mat))  # Return the renamed matrix as a distance object
+}
+
+# Rename samples in all distance matrices using the mapping
+distance_matrices_renamed <- lapply(distance_matrices, function(mat) {
+  rename_samples(mat, sample_mapping, unifrac_mapping)
+})
+
+# Verify the renaming by printing the first few sample names in each renamed distance matrix
+for (metric_name in names(distance_matrices_renamed)) {
+  cat("\nChecking renamed", metric_name, "\n")
+  cat("First few sample names:", head(rownames(as.matrix(distance_matrices_renamed[[metric_name]]))), "\n")
+}
+```
+
+```{r}
+run_permanova <- function(dist_matrix, metadata) {
+  result <- adonis2(dist_matrix ~ Season, data = metadata, permutations = 999)
+  return(data.frame(
+    R2 = result$R2[1],
+    F = result$F[1],
+    p_value = result$`Pr(>F)`[1]
+  ))
+}
+
+# Run PERMANOVA for all distance matrices
+permanova_results <- lapply(distance_matrices_renamed, function(dist_matrix) {
+  run_permanova(dist_matrix, metadata)
+})
+
+# Combine results into a single data frame
+permanova_results_df <- do.call(rbind, permanova_results)
+permanova_results_df$distance_metric <- rownames(permanova_results_df)
+
+# Print the results
+print(permanova_results_df)
+```
+
+
+
+
+### Guided Biplots
+
+
+
+```{r}
+######### CSS normalized DATA
+taxon_filtering_normal <- function(ps_tbl){
+# 1. Group and summarize data by Sample, Order, and Season
+Orderes <- ps_tbl %>% 
+  #filter(Season %in% c("Wet")) %>%  
+  group_by(Sample, Order, Season) %>% 
+  filter(CSSAbundance!= 0) %>% 
+  summarise(CSSAbundance = sum(CSSAbundance), .groups = 'drop')
+
+# 2. Calculate the total abundance for each sample
+total_abundance <- ps_tbl  %>%
+  #filter(Season %in% c("Wet")) %>%  
+  group_by(Sample) %>%
+  summarise(Total_Abundance = sum(CSSAbundance), .groups = 'drop')
+
+# 3. Merge the total abundance back into the grouped data and calculate relative abundance
+  Orderes <- Orderes %>%
+  left_join(total_abundance, by = "Sample") %>%
+  mutate(RelativeAbundance = (CSSAbundance / Total_Abundance) * 100) %>%
+  ungroup()
+ 
+  # 4 Calculate mean relative abundance per Order  
+    mean_relative_abundance <- Orderes %>%
+    #filter(Season %in% c("Wet")) %>%   # Filter to keep only Dry and Dry seasons
+    complete(Order, nesting(Sample), fill = list(RelativeAbundance = 0)) %>%
+    filter(!is.na(Order)) %>%  # Remove rows where Order is NA
+    group_by(Order) %>%  # Include Season in the group_by step
+    summarise(MeanAbundance = round(mean(RelativeAbundance, na.rm = TRUE), 2))  # Calculate and round mean abundance
+  
+  # 5 mean_relative_abundance_its contains the Orderes you want to use to filter raw abundance data
+    filtered_Orderes <- mean_relative_abundance %>%
+    filter(MeanAbundance >= 1.5) %>%
+    pull(Order)
+    
+    return(filtered_Orderes)
+}
+
+# Filter data for each marker 
+normal_16s <- filtered_combined_data %>% filter(Marker == "16S")
+normal_18s <- filtered_combined_data %>% filter(Marker == "18S")
+normal_its <- filtered_combined_data %>% filter(Marker == "ITS")
+
+filtered_Orderes_its_normal <- taxon_filtering_normal(normal_16s)
+filtered_Orderes_18s_normal <- taxon_filtering_normal(normal_18s)
+filtered_Orderes_16s_normal <- taxon_filtering_normal(normal_its)
+
+all_filtered_Orderes_normal <- unique(c(filtered_Orderes_its_normal,
+                                 filtered_Orderes_18s_normal,
+                                 filtered_Orderes_16s_normal))
+
+Order_to_remove <- "Clitellata"  
+
+# Remove the Order from the character vector
+all_filtered_Orderes_normal <- setdiff(all_filtered_Orderes_normal,                                                Order_to_remove)
+
+# Step 6: Retrieve Abundance Data for Filtered Orderes
+filtered_data_final_normal <- filtered_combined_data  %>%
+  filter(Order %in% all_filtered_Orderes_normal) %>%
+  select(Sample, Order, CSSAbundance, Season, Marker) %>%
+  group_by(Sample, Order, Season, Marker) %>%  # Include Season in group_by
+  summarise(Abundance = sum(CSSAbundance), .groups = 'drop')  # Keep Season in summarise
+
+# Split the data by Marker
+split_data_by_marker <- split(filtered_data_final_normal, filtered_data_final_normal$Marker)
+
+# Access individual data frames for each marker
+filtered_data_16S <- split_data_by_marker$`16S`
+filtered_data_18S <- split_data_by_marker$`18S`
+filtered_data_ITS  <- split_data_by_marker$`ITS`
+
+# For 16S data
+wide_data_16S_for_nmds <- filtered_data_16S %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+# For 18S data
+wide_data_18S_for_nmds <- filtered_data_18S %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+# For ITS data
+wide_data_ITS_for_nmds <- filtered_data_ITS %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+```
+
+
+```{r}
+######### rarefied normalized DATA
+taxon_filtering_rarefied <- function(ps_tbl){
+# 1. Group and summarize data by Sample, Order, and Season
+Orderes <- ps_tbl %>% 
+  #filter(Season %in% c("Wet")) %>%  
+  group_by(Sample, Order, Season) %>% 
+  filter(RarefiedAbundance!= 0) %>% 
+  summarise(RarefiedAbundance = sum(RarefiedAbundance), .groups = 'drop')
+
+# 2. Calculate the total abundance for each sample
+total_abundance <- ps_tbl  %>%
+  #filter(Season %in% c("Wet")) %>%  
+  group_by(Sample) %>%
+  summarise(Total_Abundance = sum(RarefiedAbundance), .groups = 'drop')
+
+# 3. Merge the total abundance back into the grouped data and calculate relative abundance
+  Orderes <- Orderes %>%
+  left_join(total_abundance, by = "Sample") %>%
+  mutate(RelativeAbundance = (RarefiedAbundance / Total_Abundance) * 100) %>%
+  ungroup()
+ 
+  # 4 Calculate mean relative abundance per Order  
+    mean_relative_abundance <- Orderes %>%
+    #filter(Season %in% c("Wet")) %>%   # Filter to keep only Dry and Dry seasons
+    complete(Order, nesting(Sample), fill = list(RelativeAbundance = 0)) %>%
+    filter(!is.na(Order)) %>%  # Remove rows where Order is NA
+    group_by(Order) %>%  # Include Season in the group_by step
+    summarise(MeanAbundance = round(mean(RelativeAbundance, na.rm = TRUE), 2))  # Calculate and round mean abundance
+  
+  # 5 mean_relative_abundance_its contains the Orderes you want to use to filter raw abundance data
+    filtered_Orderes <- mean_relative_abundance %>%
+    filter(MeanAbundance >= 1.5) %>%
+    pull(Order)
+    
+    return(filtered_Orderes)
+}
+
+# Filter data for each marker 
+rarefied_16s <- filtered_combined_data %>% filter(Marker == "16S")
+rarefied_18s <- filtered_combined_data %>% filter(Marker == "18S")
+rarefied_its <- filtered_combined_data %>% filter(Marker == "ITS")
+
+filtered_Orderes_its_rarefied <- taxon_filtering_rarefied(rarefied_16s)
+filtered_Orderes_18s_rarefied <- taxon_filtering_rarefied(rarefied_18s)
+filtered_Orderes_16s_rarefied <- taxon_filtering_rarefied(rarefied_its)
+
+all_filtered_Orderes_rarefied <- unique(c(filtered_Orderes_its_rarefied,
+                                 filtered_Orderes_18s_rarefied,
+                                 filtered_Orderes_16s_rarefied))
+
+Order_to_remove <- "Clitellata"  
+
+# Remove the Order from the character vector
+all_filtered_Orderes_rarefied <- setdiff(all_filtered_Orderes_rarefied,                                                Order_to_remove)
+
+# Step 6: Retrieve Abundance Data for Filtered Orderes
+filtered_data_final_rarefied <- filtered_combined_data  %>%
+  filter(Order %in% all_filtered_Orderes_rarefied) %>%
+  select(Sample, Order, RarefiedAbundance, Season, Marker) %>%
+  group_by(Sample, Order, Season, Marker) %>%  # Include Season in group_by
+  summarise(Abundance = sum(RarefiedAbundance), .groups = 'drop')  # Keep Season in summarise
+
+# Split the data by Marker
+split_data_by_marker <- split(filtered_data_final_rarefied, filtered_data_final_rarefied$Marker)
+
+# Access individual data frames for each marker
+filtered_data_16S <- split_data_by_marker$`16S`
+filtered_data_18S <- split_data_by_marker$`18S`
+filtered_data_ITS  <- split_data_by_marker$`ITS`
+
+# For 16S data
+wide_rare_16S_for_nmds <- filtered_data_16S %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+# For 18S data
+wide_rare_18S_for_nmds <- filtered_data_18S %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+
+# For ITS data
+wide_rare_ITS_for_nmds <- filtered_data_ITS %>%
+  pivot_wider(names_from = Order, values_from = Abundance, values_fill = 0) %>%
+  column_to_rownames("Sample") %>%
+  select(-Season, -Marker)
+```
+
+
+
+```{r}
+# For 16S data
+bray_curtis_dist_16S <- vegdist(wide_data_16S_for_nmds, method = "bray")
+bray_curtis_nmds_16S <- metaMDS(bray_curtis_dist_16S, k = 2, trymax = 100)
+stress_16S <- bray_curtis_nmds_16S$stress  # Save stress value
+
+# For 18S data
+bray_curtis_dist_18S <- vegdist(wide_data_18S_for_nmds, method = "bray")
+bray_curtis_nmds_18S <- metaMDS(bray_curtis_dist_18S, k = 2, trymax = 100)
+stress_18S <- bray_curtis_nmds_18S$stress  # Save stress value
+
+# For ITS data
+bray_curtis_dist_ITS <- vegdist(wide_data_ITS_for_nmds, method = "bray")
+bray_curtis_nmds_ITS <- metaMDS(bray_curtis_dist_ITS, k = 2, trymax = 100)
+stress_ITS <- bray_curtis_nmds_ITS$stress  # Save stress value
+
+# Extract and standardize NMDS coordinates for 16S
+bray_curtis_nmds_coords_16S <- as.data.frame(bray_curtis_nmds_16S$points)
+bray_curtis_nmds_coords_16S$Sample <- rownames(bray_curtis_nmds_coords_16S)
+bray_curtis_nmds_coords_16S$NMDS1 <- bray_curtis_nmds_coords_16S$MDS1 / max(abs(bray_curtis_nmds_coords_16S$MDS1))
+bray_curtis_nmds_coords_16S$NMDS2 <- bray_curtis_nmds_coords_16S$MDS2 / max(abs(bray_curtis_nmds_coords_16S$MDS2))
+
+# Repeat for 18S
+bray_curtis_nmds_coords_18S <- as.data.frame(bray_curtis_nmds_18S$points)
+bray_curtis_nmds_coords_18S$Sample <- rownames(bray_curtis_nmds_coords_18S)
+bray_curtis_nmds_coords_18S$NMDS1 <- bray_curtis_nmds_coords_18S$MDS1 / max(abs(bray_curtis_nmds_coords_18S$MDS1))
+bray_curtis_nmds_coords_18S$NMDS2 <- bray_curtis_nmds_coords_18S$MDS2 / max(abs(bray_curtis_nmds_coords_18S$MDS2))
+
+# Repeat for ITS
+bray_curtis_nmds_coords_ITS <- as.data.frame(bray_curtis_nmds_ITS$points)
+bray_curtis_nmds_coords_ITS$Sample <- rownames(bray_curtis_nmds_coords_ITS)
+bray_curtis_nmds_coords_ITS$NMDS1 <- bray_curtis_nmds_coords_ITS$MDS1 / max(abs(bray_curtis_nmds_coords_ITS$MDS1))
+bray_curtis_nmds_coords_ITS$NMDS2 <- bray_curtis_nmds_coords_ITS$MDS2 / max(abs(bray_curtis_nmds_coords_ITS$MDS2))
+
+# Step 1: Create a unique Sample to Season mapping for 16S
+sample_season_map_16S <- filtered_data_16S %>%
+  select(Sample, Season) %>%
+  distinct()  # Ensure each sample is listed only once
+
+# Step 2: Add season information to the NMDS coordinates for 16S
+bray_curtis_nmds_coords_16S$Season <- sample_season_map_16S$Season[match(bray_curtis_nmds_coords_16S$Sample, sample_season_map_16S$Sample)]
+
+# Step 3: Repeat for 18S
+sample_season_map_18S <- filtered_data_18S %>%
+  select(Sample, Season) %>%
+  distinct()
+bray_curtis_nmds_coords_18S$Season <- sample_season_map_18S$Season[match(bray_curtis_nmds_coords_18S$Sample, sample_season_map_18S$Sample)]
+
+# Step 4: Repeat for ITS
+sample_season_map_ITS <- filtered_data_ITS %>%
+  select(Sample, Season) %>%
+  distinct()
+bray_curtis_nmds_coords_ITS$Season <- sample_season_map_ITS$Season[match(bray_curtis_nmds_coords_ITS$Sample, sample_season_map_ITS$Sample)]
+
+# Calculate weighted averages for Orderes based on NMDS coordinates for 16S
+bray_curtis_Order_scores_16S <- wascores(bray_curtis_nmds_coords_16S[, c("NMDS1", "NMDS2")], wide_data_16S_for_nmds)
+# Convert the Order scores to a dataframe for plotting
+bray_curtis_Order_scores_df_16S <- as.data.frame(bray_curtis_Order_scores_16S)
+bray_curtis_Order_scores_df_16S$Order <- rownames(bray_curtis_Order_scores_df_16S)
+
+# Repeat for 18S
+bray_curtis_Order_scores_18S <- wascores(bray_curtis_nmds_coords_18S[, c("NMDS1", "NMDS2")], wide_data_18S_for_nmds)
+bray_curtis_Order_scores_df_18S <- as.data.frame(bray_curtis_Order_scores_18S)
+bray_curtis_Order_scores_df_18S$Order <- rownames(bray_curtis_Order_scores_df_18S)
+
+# Repeat for ITS
+bray_curtis_Order_scores_ITS <- wascores(bray_curtis_nmds_coords_ITS[, c("NMDS1", "NMDS2")], wide_data_ITS_for_nmds)
+bray_curtis_Order_scores_df_ITS <- as.data.frame(bray_curtis_Order_scores_ITS)
+bray_curtis_Order_scores_df_ITS$Order <- rownames(bray_curtis_Order_scores_df_ITS)
+
+```
+
+
+```{r}
+# For 16S data
+jaccard_dist_16S <- vegdist(wide_rare_16S_for_nmds, method = "jaccard")
+jaccard_nmds_16S <- metaMDS(jaccard_dist_16S, k = 2, trymax = 100)
+stress_16S <- jaccard_nmds_16S$stress  # Save stress value
+
+# For 18S data
+jaccard_dist_18S <- vegdist(wide_rare_18S_for_nmds, method = "jaccard")
+jaccard_nmds_18S <- metaMDS(jaccard_dist_18S, k = 2, trymax = 100)
+stress_18S <- jaccard_nmds_18S$stress  # Save stress value
+
+# For ITS data
+jaccard_dist_ITS <- vegdist(wide_rare_ITS_for_nmds, method = "jaccard")
+jaccard_nmds_ITS <- metaMDS(jaccard_dist_ITS, k = 2, trymax = 100)
+stress_ITS <- jaccard_nmds_ITS$stress  # Save stress value
+
+# Extract and standardize NMDS coordinates for 16S
+jaccard_nmds_coords_16S <- as.data.frame(jaccard_nmds_16S$points)
+jaccard_nmds_coords_16S$Sample <- rownames(jaccard_nmds_coords_16S)
+jaccard_nmds_coords_16S$NMDS1 <- jaccard_nmds_coords_16S$MDS1 / max(abs(jaccard_nmds_coords_16S$MDS1))
+jaccard_nmds_coords_16S$NMDS2 <- jaccard_nmds_coords_16S$MDS2 / max(abs(jaccard_nmds_coords_16S$MDS2))
+
+# Repeat for 18S
+jaccard_nmds_coords_18S <- as.data.frame(jaccard_nmds_18S$points)
+jaccard_nmds_coords_18S$Sample <- rownames(jaccard_nmds_coords_18S)
+jaccard_nmds_coords_18S$NMDS1 <- jaccard_nmds_coords_18S$MDS1 / max(abs(jaccard_nmds_coords_18S$MDS1))
+jaccard_nmds_coords_18S$NMDS2 <- jaccard_nmds_coords_18S$MDS2 / max(abs(jaccard_nmds_coords_18S$MDS2))
+
+# Repeat for ITS
+jaccard_nmds_coords_ITS <- as.data.frame(jaccard_nmds_ITS$points)
+jaccard_nmds_coords_ITS$Sample <- rownames(jaccard_nmds_coords_ITS)
+jaccard_nmds_coords_ITS$NMDS1 <- jaccard_nmds_coords_ITS$MDS1 / max(abs(jaccard_nmds_coords_ITS$MDS1))
+jaccard_nmds_coords_ITS$NMDS2 <- jaccard_nmds_coords_ITS$MDS2 / max(abs(jaccard_nmds_coords_ITS$MDS2))
+
+# Step 1: Create a unique Sample to Season mapping for 16S
+sample_season_map_16S <- filtered_data_16S %>%
+  select(Sample, Season) %>%
+  distinct()  # Ensure each sample is listed only once
+
+# Step 2: Add season information to the NMDS coordinates for 16S
+jaccard_nmds_coords_16S$Season <- sample_season_map_16S$Season[match(jaccard_nmds_coords_16S$Sample, sample_season_map_16S$Sample)]
+
+# Step 3: Repeat for 18S
+sample_season_map_18S <- filtered_data_18S %>%
+  select(Sample, Season) %>%
+  distinct()
+jaccard_nmds_coords_18S$Season <- sample_season_map_18S$Season[match(jaccard_nmds_coords_18S$Sample, sample_season_map_18S$Sample)]
+
+# Step 4: Repeat for ITS
+sample_season_map_ITS <- filtered_data_ITS %>%
+  select(Sample, Season) %>%
+  distinct()
+jaccard_nmds_coords_ITS$Season <- sample_season_map_ITS$Season[match(jaccard_nmds_coords_ITS$Sample, sample_season_map_ITS$Sample)]
+
+# Calculate weighted averages for Orderes based on NMDS coordinates for 16S
+jaccard_Order_scores_16S <- wascores(jaccard_nmds_coords_16S[, c("NMDS1", "NMDS2")], wide_data_16S_for_nmds)
+# Convert the Order scores to a dataframe for plotting
+jaccard_Order_scores_df_16S <- as.data.frame(jaccard_Order_scores_16S)
+jaccard_Order_scores_df_16S$Order <- rownames(jaccard_Order_scores_df_16S)
+
+# Repeat for 18S
+jaccard_Order_scores_18S <- wascores(jaccard_nmds_coords_18S[, c("NMDS1", "NMDS2")], wide_data_18S_for_nmds)
+jaccard_Order_scores_df_18S <- as.data.frame(jaccard_Order_scores_18S)
+jaccard_Order_scores_df_18S$Order <- rownames(jaccard_Order_scores_df_18S)
+
+# Repeat for ITS
+jaccard_Order_scores_ITS <- wascores(jaccard_nmds_coords_ITS[, c("NMDS1", "NMDS2")], wide_data_ITS_for_nmds)
+jaccard_Order_scores_df_ITS <- as.data.frame(jaccard_Order_scores_ITS)
+jaccard_Order_scores_df_ITS$Order <- rownames(jaccard_Order_scores_df_ITS)
+
+```
+
+```{r}
+# For 16S data
+canberra_dist_16S <- vegdist(wide_data_16S_for_nmds, method = "canberra")
+canberra_nmds_16S <- metaMDS(canberra_dist_16S, k = 2, trymax = 100)
+stress_16S <- canberra_nmds_16S$stress  # Save stress value
+
+# For 18S data
+canberra_dist_18S <- vegdist(wide_data_18S_for_nmds, method = "canberra")
+canberra_nmds_18S <- metaMDS(canberra_dist_18S, k = 2, trymax = 100)
+stress_18S <- canberra_nmds_18S$stress  # Save stress value
+
+# For ITS data
+canberra_dist_ITS <- vegdist(wide_data_ITS_for_nmds, method = "canberra")
+canberra_nmds_ITS <- metaMDS(canberra_dist_ITS, k = 2, trymax = 100)
+stress_ITS <- canberra_nmds_ITS$stress  # Save stress value
+
+# Extract and standardize NMDS coordinates for 16S
+canberra_nmds_coords_16S <- as.data.frame(canberra_nmds_16S$points)
+canberra_nmds_coords_16S$Sample <- rownames(canberra_nmds_coords_16S)
+canberra_nmds_coords_16S$NMDS1 <- canberra_nmds_coords_16S$MDS1 / max(abs(canberra_nmds_coords_16S$MDS1))
+canberra_nmds_coords_16S$NMDS2 <- canberra_nmds_coords_16S$MDS2 / max(abs(canberra_nmds_coords_16S$MDS2))
+
+# Repeat for 18S
+canberra_nmds_coords_18S <- as.data.frame(canberra_nmds_18S$points)
+canberra_nmds_coords_18S$Sample <- rownames(canberra_nmds_coords_18S)
+canberra_nmds_coords_18S$NMDS1 <- canberra_nmds_coords_18S$MDS1 / max(abs(canberra_nmds_coords_18S$MDS1))
+canberra_nmds_coords_18S$NMDS2 <- canberra_nmds_coords_18S$MDS2 / max(abs(canberra_nmds_coords_18S$MDS2))
+
+# Repeat for ITS
+canberra_nmds_coords_ITS <- as.data.frame(canberra_nmds_ITS$points)
+canberra_nmds_coords_ITS$Sample <- rownames(canberra_nmds_coords_ITS)
+canberra_nmds_coords_ITS$NMDS1 <- canberra_nmds_coords_ITS$MDS1 / max(abs(canberra_nmds_coords_ITS$MDS1))
+canberra_nmds_coords_ITS$NMDS2 <- canberra_nmds_coords_ITS$MDS2 / max(abs(canberra_nmds_coords_ITS$MDS2))
+
+# Step 1: Create a unique Sample to Season mapping for 16S
+sample_season_map_16S <- filtered_data_16S %>%
+  select(Sample, Season) %>%
+  distinct()  # Ensure each sample is listed only once
+
+# Step 2: Add season information to the NMDS coordinates for 16S
+canberra_nmds_coords_16S$Season <- sample_season_map_16S$Season[match(canberra_nmds_coords_16S$Sample, sample_season_map_16S$Sample)]
+
+# Step 3: Repeat for 18S
+sample_season_map_18S <- filtered_data_18S %>%
+  select(Sample, Season) %>%
+  distinct()
+canberra_nmds_coords_18S$Season <- sample_season_map_18S$Season[match(canberra_nmds_coords_18S$Sample, sample_season_map_18S$Sample)]
+
+# Step 4: Repeat for ITS
+sample_season_map_ITS <- filtered_data_ITS %>%
+  select(Sample, Season) %>%
+  distinct()
+canberra_nmds_coords_ITS$Season <- sample_season_map_ITS$Season[match(canberra_nmds_coords_ITS$Sample, sample_season_map_ITS$Sample)]
+
+# Calculate weighted averages for Orderes based on NMDS coordinates for 16S
+canberra_Order_scores_16S <- wascores(canberra_nmds_coords_16S[, c("NMDS1", "NMDS2")], wide_data_16S_for_nmds)
+# Convert the Order scores to a dataframe for plotting
+canberra_Order_scores_df_16S <- as.data.frame(canberra_Order_scores_16S)
+canberra_Order_scores_df_16S$Order <- rownames(canberra_Order_scores_df_16S)
+
+# Repeat for 18S
+canberra_Order_scores_18S <- wascores(canberra_nmds_coords_18S[, c("NMDS1", "NMDS2")], wide_data_18S_for_nmds)
+canberra_Order_scores_df_18S <- as.data.frame(canberra_Order_scores_18S)
+canberra_Order_scores_df_18S$Order <- rownames(canberra_Order_scores_df_18S)
+
+# Repeat for ITS
+canberra_Order_scores_ITS <- wascores(canberra_nmds_coords_ITS[, c("NMDS1", "NMDS2")], wide_data_ITS_for_nmds)
+canberra_Order_scores_df_ITS <- as.data.frame(canberra_Order_scores_ITS)
+canberra_Order_scores_df_ITS$Order <- rownames(canberra_Order_scores_df_ITS)
+
+```
+
+
+
+
+
+

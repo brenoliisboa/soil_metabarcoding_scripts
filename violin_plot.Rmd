@@ -1,0 +1,99 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(phyloseq)
+library(dplyr)
+library(effsize)
+library(grid)
+library(rstatix)
+library(ggplot2)
+library(ggpubr)
+par(family = "sans")
+```
+
+#### CLR_CZM 16S
+
+```{r}
+Ochrophyta16S_scaled <- ps_tbl_16s_euka %>%
+  filter(Phylum == "Ochrophyta") %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  group_by(Sample, Season) %>%
+  summarise(CLR_CZM = sum(CLR_CZM), .groups = "drop") %>%
+  mutate(
+    Season = as.factor(Season),
+    CLR_CZM = (CLR_CZM - min(CLR_CZM)) / (max(CLR_CZM) - min(CLR_CZM)),
+    Marker = "16S"
+  )
+
+effect_size_Ochrophyta <- wilcox_effsize(CLR_CZM ~ Season, data = Ochrophyta16S_scaled)
+effect_size_value_Ochrophyta <- round(effect_size_Ochrophyta$effsize, 3)
+my_comparisons <- list(c("Wet", "Dry"))
+
+season_colors <- c("Dry" = "#FF0000", "Wet" = "#0000FF")
+
+# scaled 
+pdf("Ochrophyta_16S_violin_CLR-CZM_scaled.pdf", width=4, height=4.5)
+ggplot(Ochrophyta16S_scaled, aes(x = Season, y = CLR_CZM, fill = Season)) + 
+ geom_violin(trim = FALSE, alpha = 0.2, scale = 'count', width = 0.7) + 
+ theme_pubr() +
+ theme(legend.position = "none",
+       axis.title.y = element_text(size = 11)) +
+ ylab("16S Ochrophyta - Scaled CLR-CZM Abundance") +
+ scale_fill_manual(values = season_colors) +
+  scale_y_continuous(expand = c(0, 0), 
+                   limits = c(0, 1.5),
+                   breaks = seq(0, 1.5, by = 0.5)) +
+ geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+ geom_jitter(shape = 16, position = position_jitter(0.05)) +
+ annotate("text", x = 1.5, y = max(Ochrophyta16S_scaled$CLR_CZM) * 1.05, 
+          label = paste0("Effect Size: ", 
+                         effect_size_value_Ochrophyta), 
+          size = 3.5, color = "black", hjust = 0.5, vjust = -0.1) +
+ stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+dev.off()
+```
+
+
+```{r}
+Ochrophyta18S_scaled <- filtered_combined_data %>%
+  filter(Phylum == "Ochrophyta") %>%
+  mutate(CLR_CZM = CLR_CZM + abs(min(CLR_CZM, na.rm = TRUE))) %>%
+  group_by(Sample, Season) %>%
+  summarise(CLR_CZM = sum(CLR_CZM), .groups = "drop") %>%
+  mutate(
+    Season = as.factor(Season),
+    CLR_CZM = (CLR_CZM - min(CLR_CZM)) / (max(CLR_CZM) - min(CLR_CZM)),
+    Marker = "18S"
+  )
+effect_size_Ochrophyta <- wilcox_effsize(CLR_CZM ~ Season, data = Ochrophyta18S_scaled)
+effect_size_value_Ochrophyta <- round(effect_size_Ochrophyta$effsize, 3)
+my_comparisons <- list(c("Wet", "Dry"))
+season_colors <- c("Dry" = "#FF0000", "Wet" = "#0000FF")
+
+# scaled values
+pdf("Ochrophyta_18S_violin_CLR-CZM_scaled.pdf", width=4, height=4.5)
+ggplot(Ochrophyta18S_scaled, aes(x = Season, y = CLR_CZM, fill = Season)) + 
+ geom_violin(trim = FALSE, alpha = 0.2, scale = 'count', width = 0.7) + 
+ theme_pubr() +
+ theme(legend.position = "none",
+       axis.title.y = element_text(size = 11)) +
+ ylab("18S Ochrophyta - Scaled CLR-CZM Abundance") +
+ scale_fill_manual(values = season_colors) +
+ geom_boxplot(width = 0.1, outlier.shape = NA, alpha = 0.5) +
+ geom_jitter(shape = 16, position = position_jitter(0.05)) +
+   scale_y_continuous(expand = c(0, 0), 
+                   limits = c(0, 1.5),
+                   breaks = seq(0, 1.5, by = 0.5)) +
+ annotate("text", x = 1.5, y = max(Ochrophyta18S_scaled$CLR_CZM) * 1.05, 
+          label = paste0("Effect Size: ", 
+                         effect_size_value_Ochrophyta), 
+          size = 3.5, color = "black", hjust = 0.5, vjust = -0.1) +
+ stat_compare_means(comparisons = my_comparisons, method = "wilcox.test", paired = FALSE)
+dev.off()
+```
+
+
+
