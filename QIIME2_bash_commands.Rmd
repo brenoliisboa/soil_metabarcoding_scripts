@@ -1,0 +1,181 @@
+---
+title: "QIIME2_bash_commands"
+author: "Breno"
+date: "2025-01-08"
+---
+```{bash}
+# === 16S rRNA Processing Pipeline ===
+
+# Import raw reads
+qiime tools import \
+  --type 'SampleData[SequencesWithQuality]' \
+  --input-path manifest_16S.tsv \
+  --output-path reads_16S.qza \
+  --input-format SingleEndFastqManifestPhred33V2
+
+# Remove primers using cutadapt
+qiime cutadapt trim-single \
+  --i-demultiplexed-sequences reads_16S.qza \
+  --p-cores 12 \
+  --p-front CCGGACTACHVGGGTWTCTAATCC \
+  --o-trimmed-sequences trimmed_16S.qza \
+  --verbose
+
+# DADA2 denoising
+# Parameters: truncate at 250bp, trim first 24bp, quality threshold 2
+qiime dada2 denoise-pyro \
+  --i-demultiplexed-seqs trimmed_16S.qza \
+  --p-n-threads 0 \
+  --p-trim-left 0 \
+  --p-trunc-len 250 \
+  --p-trunc-q 2 \
+  --p-chimera-method consensus \
+  --o-representative-sequences rep-seqs-16S.qza \
+  --o-table table-16S.qza \
+  --o-denoising-stats stats-16S.qza \
+  --verbose
+
+# Import SILVA v132 reference database (97% identity threshold)
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path silva_132_99_16S.fna \
+  --output-path silva_132_99_16S.qza
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path silva_132_taxonomy_7_levels.txt \
+  --output-path silva_132_taxonomy.qza
+
+# Train the classifier
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads silva_132_99_16S.qza \
+  --i-reference-taxonomy silva_132_taxonomy.qza \
+  --o-classifier classifier_16S.qza
+
+# Taxonomic classification
+qiime feature-classifier classify-sklearn \
+  --i-classifier classifier_16S.qza \
+  --i-reads rep-seqs-16S.qza \
+  --o-classification taxonomy_16S.qza \
+  --p-n-jobs -1
+```
+
+```{bash}
+# === 18S rRNA Processing Pipeline ===
+
+# Demultiplexing 18S sequences
+qiime cutadapt demux-single \
+  --i-seqs raw_18S.qza \
+  --m-barcodes-file metadata_18S.tsv \
+  --m-barcodes-column barcode-sequence \
+  --p-error-rate 0.1 \
+  --o-per-sample-sequences demux_18S.qza \
+  --o-untrimmed-sequences untrimmed_18S.qza \
+  --verbose
+
+# Import raw reads
+qiime tools import \
+  --type 'SampleData[SequencesWithQuality]' \
+  --input-path manifest_18S.tsv \
+  --output-path reads_18S.qza \
+  --input-format SingleEndFastqManifestPhred33V2
+
+# Remove primers using cutadapt
+qiime cutadapt trim-single \
+  --i-demultiplexed-sequences reads_18S.qza \
+  --p-cores 12 \
+  --p-front CCTATCGCCGTTCGGTACACACCGCCCGTC \
+  --o-trimmed-sequences trimmed_18S.qza \
+  --verbose
+
+# DADA2 denoising
+# Parameters: truncate at 176bp, trim first 24bp, quality threshold 2
+qiime dada2 denoise-pyro \
+  --i-demultiplexed-seqs trimmed_18S.qza \
+  --p-n-threads 0 \
+  --p-trim-left 0 \
+  --p-trunc-len 176 \
+  --p-trunc-q 2 \
+  --p-chimera-method consensus \
+  --o-representative-sequences rep-seqs-18S.qza \
+  --o-table table-18S.qza \
+  --o-denoising-stats stats-18S.qza \
+  --verbose
+
+# Import SILVA v132 reference database (97% identity threshold)
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path silva_132_99_18S.fna \
+  --output-path silva_132_99_18S.qza
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path silva_132_taxonomy_18S_7_levels.txt \
+  --output-path silva_132_taxonomy_18S.qza
+
+# Train the classifier
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads silva_132_99_18S.qza \
+  --i-reference-taxonomy silva_132_taxonomy_18S.qza \
+  --o-classifier classifier_18S.qza
+
+# Taxonomic classification
+qiime feature-classifier classify-sklearn \
+  --i-classifier classifier_18S.qza \
+  --i-reads rep-seqs-18S.qza \
+  --o-classification taxonomy_18S.qza \
+  --p-n-jobs -1
+```
+
+
+```{bash}
+# === ITS Processing Pipeline ===
+
+# Import raw reads (primers already removed)
+qiime tools import \
+  --type 'SampleData[SequencesWithQuality]' \
+  --input-path manifest_ITS.tsv \
+  --output-path reads_ITS.qza \
+  --input-format SingleEndFastqManifestPhred33V2
+
+# DADA2 denoising
+# Parameters: truncate at 227bp, no left trimming, quality threshold 2
+qiime dada2 denoise-pyro \
+  --i-demultiplexed-seqs reads_ITS.qza \
+  --p-n-threads 0 \
+  --p-trim-left 0 \
+  --p-trunc-len 227 \
+  --p-trunc-q 2 \
+  --p-chimera-method consensus \
+  --o-representative-sequences rep-seqs-ITS.qza \
+  --o-table table-ITS.qza \
+  --o-denoising-stats stats-ITS.qza \
+  --verbose
+
+# Import UNITE v10.0 reference database
+qiime tools import \
+  --type 'FeatureData[Sequence]' \
+  --input-path unite_v10.fna \
+  --output-path unite_v10.qza
+
+qiime tools import \
+  --type 'FeatureData[Taxonomy]' \
+  --input-format HeaderlessTSVTaxonomyFormat \
+  --input-path unite_v10_taxonomy.txt \
+  --output-path unite_v10_taxonomy.qza
+
+# Train the classifier
+qiime feature-classifier fit-classifier-naive-bayes \
+  --i-reference-reads unite_v10.qza \
+  --i-reference-taxonomy unite_v10_taxonomy.qza \
+  --o-classifier classifier_ITS.qza
+
+# Taxonomic classification using dynamic taxonomic-specific thresholds
+qiime feature-classifier classify-sklearn \
+  --i-classifier classifier_ITS.qza \
+  --i-reads rep-seqs-ITS.qza \
+  --o-classification taxonomy_ITS.qza \
+  --p-n-jobs -1
+```
